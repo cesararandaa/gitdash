@@ -21,6 +21,7 @@ from textual.widgets import (
     Label,
     ListItem,
     ListView,
+    Markdown,
     RichLog,
     Static,
     Tree,
@@ -248,6 +249,29 @@ class StashModal(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class MarkdownModal(ModalScreen):
+    """Modal to render a markdown file."""
+
+    BINDINGS = [Binding("escape", "close", "Close"), Binding("q", "close", "Close")]
+
+    def __init__(self, title: str, content: str) -> None:
+        super().__init__()
+        self.title_text = title
+        self.content = content
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="diff-dialog"):
+            yield Label(self.title_text, id="diff-title")
+            yield Markdown(self.content, id="md-viewer")
+            yield Button("Close", variant="primary", id="btn-close")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.app.pop_screen()
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
 
 
 class LogModal(ModalScreen):
@@ -640,6 +664,12 @@ class RepoCard(Vertical, can_focus=True):
             cat = "untracked"
         else:
             cat = "unstaged"
+        if filepath.endswith(".md"):
+            full_path = Path(self.repo.working_dir) / filepath
+            if full_path.exists():
+                content = full_path.read_text(errors="replace")
+                self.app.push_screen(MarkdownModal(filepath, content))
+                return
         self.app._do_diff(self, single_file=(filepath, cat))
 
     def action_toggle_collapse(self) -> None:
@@ -812,6 +842,13 @@ class GitDash(App):
         height: 1fr;
         border: solid $primary-background;
         margin: 1 0;
+    }
+
+    #md-viewer {
+        height: 1fr;
+        border: solid $primary-background;
+        margin: 1 0;
+        overflow-y: auto;
     }
 
     #branch-list {
