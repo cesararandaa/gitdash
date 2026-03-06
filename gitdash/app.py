@@ -476,10 +476,11 @@ class GitDash(App):
         Binding("P", "pull_all", "Pull All"),
     ]
 
-    def __init__(self, base_path: Path) -> None:
+    def __init__(self, base_path: Path, repo_paths: list[Path] | None = None, group_name: str | None = None) -> None:
         super().__init__()
         self.base_path = base_path
-        self.repo_paths = find_repos(base_path)
+        self.repo_paths = repo_paths or find_repos(base_path)
+        self.group_name = group_name
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -490,7 +491,8 @@ class GitDash(App):
         yield Footer()
 
     def on_mount(self) -> None:
-        self.title = f"GitDash — {self.base_path}"
+        title_suffix = self.group_name or str(self.base_path)
+        self.title = f"GitDash — {title_suffix}"
         self._update_status_bar("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  s: stash  F: fetch all  P: pull all")
         cards = list(self.query(RepoCard))
         if cards:
@@ -719,11 +721,61 @@ class GitDash(App):
 
 
 def main() -> None:
-    base = Path(sys.argv[1]) if len(sys.argv) > 1 else Path.cwd()
-    if not base.is_dir():
-        print(f"Error: {base} is not a directory")
+    from gitdash.config import load_config, init_config, CONFIG_FILE
+
+    args = sys.argv[1:]
+
+    # --init: create default config
+    if "--init" in args:
+        path = init_config()
+        print(f"Config created at {path}")
+        print("Edit it to add your repo groups, then run: gitdash")
+        return
+
+    # If a path is given, use it directly (backwards compatible)
+    if args and not args[0].startswith("-"):
+        base = Path(args[0]).expanduser()
+        if not base.is_dir():
+            print(f"Error: {base} is not a directory")
+            sys.exit(1)
+        repo_paths = find_repos(base)
+        app = GitDash(base, repo_paths)
+        app.run()
+        return
+
+    # Load config file
+    config = load_config()
+
+    if not config.groups:
+        if not CONFIG_FILE.exists():
+            print("No config found. Run: gitdash --init")
+            print("Or pass a path:    gitdash ~/code/myproject")
+            sys.exit(1)
+        else:
+            print(f"No groups defined in {CONFIG_FILE}")
+            sys.exit(1)
+
+    # Pick group: --group NAME, or default_group, or first group
+    group = None
+    if "--group" in args:
+        idx = args.index("--group")
+        if idx + 1 < len(args):
+            group = config.get_group(args[idx + 1])
+            if not group:
+                print(f"Group '{args[idx + 1]}' not found. Available: {', '.join(g.name for g in config.groups)}")
+                sys.exit(1)
+
+    if not group and config.default_group:
+        group = config.get_group(config.default_group)
+
+    if not group:
+        group = config.groups[0]
+
+    if not group.repos:
+        print(f"No repos found in group '{group.name}' ({group.path})")
         sys.exit(1)
-    app = GitDash(base)
+
+    app = GitDash(group.path, group.repos, group.name)
     app.run()
 
 

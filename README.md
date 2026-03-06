@@ -18,7 +18,41 @@ Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/).
 ```bash
 git clone https://github.com/cesararandaa/gitdash.git
 cd gitdash
-uv run python -m gitdash.app ~/path/to/your/repos
+```
+
+### Quick start (pass a path)
+
+```bash
+uv run python -m gitdash.app ~/code/myproject
+```
+
+### Config file (recommended)
+
+```bash
+uv run python -m gitdash.app --init   # creates ~/.config/gitdash/config.toml
+```
+
+Edit the config to define your repo groups:
+
+```toml
+default_group = "work"
+
+[[groups]]
+name = "work"
+path = "~/code/work"
+# auto-discovers all git repos in this directory
+
+[[groups]]
+name = "personal"
+path = "~/code/personal"
+repos = ["blog", "dotfiles"]  # or list specific repos
+```
+
+Then just run:
+
+```bash
+uv run python -m gitdash.app              # opens default group
+uv run python -m gitdash.app --group personal  # opens a specific group
 ```
 
 ## Keybindings
