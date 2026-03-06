@@ -430,6 +430,7 @@ class RepoCard(Vertical, can_focus=True):
             yield Button("v", id=f"toggle-{self.repo_path.name}", classes="toggle-btn")
             yield Static(self.repo_path.name, classes="repo-name")
             yield Static("", id=f"branch-{self.repo_path.name}", classes="repo-branch")
+            yield Static("", id=f"changes-{self.repo_path.name}", classes="repo-changes")
             yield Static("", id=f"sync-{self.repo_path.name}", classes="repo-sync")
         yield Static("", id=f"syncbtn-{self.repo_path.name}", classes="sync-btn")
         with Vertical(id=f"body-{self.repo_path.name}", classes="repo-body"):
@@ -456,6 +457,16 @@ class RepoCard(Vertical, can_focus=True):
         try:
             branch_lbl = self.query_one(f"#branch-{name}", Static)
             branch_lbl.update(f" {self.status['branch']}")
+        except NoMatches:
+            pass
+
+        total_changes = len(self.status["staged"]) + len(self.status["unstaged"]) + len(self.status["untracked"])
+        try:
+            changes_lbl = self.query_one(f"#changes-{name}", Static)
+            if total_changes:
+                changes_lbl.update(f"({total_changes} changes)")
+            else:
+                changes_lbl.update("")
         except NoMatches:
             pass
 
@@ -628,6 +639,12 @@ class GitDash(App):
 
     .repo-branch {
         color: #a6e3a1;
+        width: auto;
+        margin-left: 1;
+    }
+
+    .repo-changes {
+        color: #fab387;
         width: auto;
         margin-left: 1;
     }
