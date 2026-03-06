@@ -345,6 +345,108 @@ class LogModal(ModalScreen):
         self.app.pop_screen()
 
 
+class StageModal(ModalScreen):
+    """Modal to stage/unstage individual files."""
+
+    BINDINGS = [Binding("escape", "close", "Close"), Binding("q", "close", "Close")]
+
+    def __init__(self, repo: Repo) -> None:
+        super().__init__()
+        self.repo = repo
+        self._next_id = 0
+        self._file_map: dict[int, tuple[str, str]] = {}
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="filediff-dialog"):
+            yield Label("Stage / Unstage Files", id="diff-title")
+            yield ListView(id="stage-list")
+            with Horizontal(id="filediff-buttons"):
+                yield Button("Stage All", variant="success", id="btn-stage-all")
+                yield Button("Unstage All", variant="warning", id="btn-unstage-all")
+                yield Button("Close", variant="primary", id="btn-close")
+
+    def on_mount(self) -> None:
+        self._refresh_list()
+
+    def _refresh_list(self) -> None:
+        lv = self.query_one("#stage-list", ListView)
+        lv.clear()
+        self._file_map = {}
+
+        staged = [d.a_path for d in self.repo.index.diff("HEAD")] if self.repo.head.is_valid() else []
+        unstaged = [d.a_path for d in self.repo.index.diff(None)]
+        untracked = self.repo.untracked_files
+
+        if staged:
+            lv.append(ListItem(Label("── Staged (will be committed) ──")))
+            for f in staged:
+                idx = self._next_id; self._next_id += 1
+                lv.append(ListItem(Label(f"  [x] {f}"), id=f"sf-{idx}"))
+                self._file_map[idx] = (f, "staged")
+        if unstaged:
+            lv.append(ListItem(Label("── Modified (not staged) ──")))
+            for f in unstaged:
+                idx = self._next_id; self._next_id += 1
+                lv.append(ListItem(Label(f"  [ ] {f}"), id=f"sf-{idx}"))
+                self._file_map[idx] = (f, "unstaged")
+        if untracked:
+            lv.append(ListItem(Label("── Untracked ──")))
+            for f in untracked:
+                idx = self._next_id; self._next_id += 1
+                lv.append(ListItem(Label(f"  [ ] {f}"), id=f"sf-{idx}"))
+                self._file_map[idx] = (f, "untracked")
+        if not staged and not unstaged and not untracked:
+            lv.append(ListItem(Label("  (no changes)")))
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.item is None or not event.item.id or not event.item.id.startswith("sf-"):
+            return
+        try:
+            idx = int(event.item.id.removeprefix("sf-"))
+        except ValueError:
+            return
+        if idx not in self._file_map:
+            return
+        filepath, cat = self._file_map[idx]
+        try:
+            if cat == "staged":
+                self.repo.git.reset("HEAD", "--", filepath)
+            else:
+                self.repo.index.add([filepath])
+        except GitCommandError:
+            pass
+        self._refresh_list()
+        self._refresh_parent_card()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-stage-all":
+            try:
+                self.repo.git.add("-A")
+            except GitCommandError:
+                pass
+            self._refresh_list()
+            self._refresh_parent_card()
+            return
+        if event.button.id == "btn-unstage-all":
+            try:
+                self.repo.git.reset("HEAD")
+            except GitCommandError:
+                pass
+            self._refresh_list()
+            self._refresh_parent_card()
+            return
+        self.app.pop_screen()
+
+    def _refresh_parent_card(self) -> None:
+        for card in self.app.query(RepoCard):
+            if card.repo.working_dir == self.repo.working_dir:
+                card.refresh_status()
+                break
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
+
+
 class DiffModal(ModalScreen):
     """Show a diff in a modal."""
 
@@ -516,6 +618,7 @@ class RepoCard(Vertical, can_focus=True):
     collapsed = reactive(True)
 
     BINDINGS = [
+        Binding("a", "stage", "Stage", show=True),
         Binding("b", "branch", "Branch", show=True),
         Binding("c", "commit", "Commit", show=True),
         Binding("d", "diff", "Diff", show=True),
@@ -661,6 +764,9 @@ class RepoCard(Vertical, can_focus=True):
 
     def action_diff(self) -> None:
         self.app._do_diff(self)
+
+    def action_stage(self) -> None:
+        self.app._do_stage(self)
 
     def action_open_editor(self) -> None:
         self.app._do_open_editor(self)
@@ -836,7 +942,7 @@ class GitDash(App):
         margin: 2 4;
     }
 
-    #filediff-list, #log-list {
+    #filediff-list, #log-list, #stage-list {
         height: auto;
         max-height: 12;
         border: solid $primary-background;
@@ -1167,12 +1273,16 @@ class GitDash(App):
 
         self.push_screen(ConfirmModal(msg), on_confirm)
 
+    def _do_stage(self, card: RepoCard) -> None:
+        self.push_screen(StageModal(card.repo))
+
     def _do_log(self, card: RepoCard) -> None:
         self.push_screen(LogModal(f"Log — {card.repo_path.name}", card.repo))
 
     def _do_commit(self, card: RepoCard) -> None:
-        # Stage all changes first
-        if not card.status["staged"] and not card.status["unstaged"] and not card.status["untracked"]:
+        has_staged = bool(card.status["staged"])
+        has_changes = has_staged or bool(card.status["unstaged"]) or bool(card.status["untracked"])
+        if not has_changes:
             self._update_status_bar(f"Nothing to commit in {card.repo_path.name}")
             return
 
@@ -1180,7 +1290,9 @@ class GitDash(App):
             if msg is None:
                 return
             try:
-                card.repo.git.add("-A")
+                if not has_staged:
+                    # Nothing staged yet — stage everything
+                    card.repo.git.add("-A")
                 card.repo.git.commit("-m", msg)
                 card.refresh_status()
                 self._update_status_bar(f"Committed to {card.repo_path.name}")

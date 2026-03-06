@@ -16,6 +16,7 @@ Like the VS Code/Cursor git sidebar, but in your terminal — no editor needed.
 - Stash manager: push, pop, apply, or drop individual stashes
 - Commit log viewer with per-commit diffs
 - Markdown file viewer for `.md` files
+- Stage individual files with toggle picker
 - Open files or repos in your editor (`e` key)
 - Group switcher to jump between repo sets on the fly
 - Auto-refresh every 30 seconds
@@ -75,6 +76,7 @@ uv run python -m gitdash.app --fetch      # fetch all on startup
 |-----|--------|
 | `j` / `Down` | Next repo |
 | `k` / `Up` | Previous repo |
+| `a` | Stage / unstage individual files |
 | `b` | Switch / create branch (local + remote) |
 | `c` | Commit |
 | `d` | Per-file diff viewer |
