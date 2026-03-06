@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import subprocess
 import sys
+from datetime import datetime
 from pathlib import Path
 
 from git import Repo, GitCommandError, InvalidGitRepositoryError
@@ -1109,6 +1110,15 @@ class GitDash(App):
         margin: 1 0;
     }
 
+    #git-log {
+        dock: bottom;
+        height: 12;
+        display: none;
+        border-top: solid $primary;
+        margin: 0 1;
+        background: $surface;
+    }
+
     #status-bar {
         dock: bottom;
         height: 1;
@@ -1129,6 +1139,7 @@ class GitDash(App):
         Binding("P", "pull_all", "Pull All"),
         Binding("g", "switch_group", "Group"),
         Binding("slash", "search", "Search"),
+        Binding("exclamation_mark", "toggle_log", "Log"),
     ]
 
     def __init__(self, base_path: Path, repo_paths: list[Path] | None = None, group_name: str | None = None, fetch_on_startup: bool = False, config=None) -> None:
@@ -1144,6 +1155,7 @@ class GitDash(App):
         with VerticalScroll(id="main-scroll"):
             for rp in self.repo_paths:
                 yield RepoCard(rp, classes="repo-card", id=f"card-{rp.name}")
+        yield RichLog(id="git-log", wrap=True, markup=False)
         yield Static("", id="status-bar")
         yield Footer()
 
@@ -1157,6 +1169,23 @@ class GitDash(App):
         if self.fetch_on_startup:
             self._startup_fetch()
         self.set_interval(30, self._auto_refresh)
+
+    def _log_action(self, msg: str) -> None:
+        """Write a timestamped entry to the git operations log."""
+        ts = datetime.now().strftime("%H:%M:%S")
+        try:
+            log = self.query_one("#git-log", RichLog)
+            log.write(f"[{ts}] {msg}")
+        except NoMatches:
+            pass
+
+    def action_toggle_log(self) -> None:
+        """Toggle visibility of the git operations log panel."""
+        try:
+            log = self.query_one("#git-log", RichLog)
+            log.display = not log.display
+        except NoMatches:
+            pass
 
     def _update_status_bar(self, msg: str) -> None:
         try:
@@ -1215,25 +1244,34 @@ class GitDash(App):
         try:
             if behind and has_changes:
                 self._update_status_bar(f"Stashing changes in {name}...")
+                self._log_action(f"[{name}] git stash push -u -m 'gitdash-auto-stash'")
                 card.repo.git.stash("push", "-u", "-m", "gitdash-auto-stash")
                 stashed = True
             if behind:
                 self._update_status_bar(f"Pulling {name}...")
+                self._log_action(f"[{name}] git pull")
                 card.repo.git.pull()
+                self._log_action(f"[{name}] pull OK")
             if ahead:
                 self._update_status_bar(f"Pushing {name}...")
+                self._log_action(f"[{name}] git push")
                 card.repo.git.push()
+                self._log_action(f"[{name}] push OK")
             if stashed:
                 self._update_status_bar(f"Restoring changes in {name}...")
+                self._log_action(f"[{name}] git stash pop")
                 try:
                     card.repo.git.stash("pop")
-                except GitCommandError:
+                except GitCommandError as e:
+                    self._log_action(f"[{name}] ERROR stash pop: {e}")
                     self._update_status_bar(f"Synced {name} — stash pop had conflicts, resolve manually")
                     self.call_from_thread(card.refresh_status)
                     return
             self.call_from_thread(card.refresh_status)
             self._update_status_bar(f"Synced {name}")
+            self._log_action(f"[{name}] sync complete")
         except GitCommandError as e:
+            self._log_action(f"[{name}] ERROR sync: {e}")
             if stashed:
                 try:
                     card.repo.git.stash("pop")
@@ -1246,11 +1284,14 @@ class GitDash(App):
     def _do_fetch(self, card: RepoCard) -> None:
         name = card.repo_path.name
         self._update_status_bar(f"Fetching {name}...")
+        self._log_action(f"[{name}] git fetch --all --prune")
         try:
             card.repo.git.fetch("--all", "--prune")
             self.call_from_thread(card.refresh_status)
             self._update_status_bar(f"Fetched {name}")
+            self._log_action(f"[{name}] fetch OK")
         except GitCommandError as e:
+            self._log_action(f"[{name}] ERROR fetch: {e}")
             self._update_status_bar(f"Fetch failed: {e}")
 
     def _do_branch(self, card: RepoCard) -> None:
@@ -1270,25 +1311,34 @@ class GitDash(App):
                 new_name = result.removeprefix("__create__")
                 if new_name:
                     try:
+                        self._log_action(f"[{card.repo_path.name}] git checkout -b {new_name}")
                         card.repo.git.checkout("-b", new_name)
                         card.refresh_status()
                         self._update_status_bar(f"Created & switched to {new_name}")
+                        self._log_action(f"[{card.repo_path.name}] branch create OK")
                     except GitCommandError as e:
+                        self._log_action(f"[{card.repo_path.name}] ERROR branch create: {e}")
                         self._update_status_bar(f"Branch create failed: {e}")
             elif result.startswith("origin/"):
                 local_name = result.replace("origin/", "", 1)
                 try:
+                    self._log_action(f"[{card.repo_path.name}] git checkout -b {local_name} --track {result}")
                     card.repo.git.checkout("-b", local_name, "--track", result)
                     card.refresh_status()
                     self._update_status_bar(f"Checked out remote branch {local_name}")
+                    self._log_action(f"[{card.repo_path.name}] checkout OK")
                 except GitCommandError as e:
+                    self._log_action(f"[{card.repo_path.name}] ERROR checkout: {e}")
                     self._update_status_bar(f"Checkout failed: {e}")
             else:
                 try:
+                    self._log_action(f"[{card.repo_path.name}] git checkout {result}")
                     card.repo.git.checkout(result)
                     card.refresh_status()
                     self._update_status_bar(f"Switched to {result}")
+                    self._log_action(f"[{card.repo_path.name}] checkout OK")
                 except GitCommandError as e:
+                    self._log_action(f"[{card.repo_path.name}] ERROR checkout: {e}")
                     self._update_status_bar(f"Checkout failed: {e}")
 
         self.push_screen(BranchModal(branches, current), on_result)
@@ -1308,25 +1358,34 @@ class GitDash(App):
                 return
             try:
                 if result == "__push__":
+                    self._log_action(f"[{name}] git stash push -u")
                     card.repo.git.stash("push", "-u")
                     card.refresh_status()
                     self._update_status_bar(f"Stashed changes in {name}")
+                    self._log_action(f"[{name}] stash push OK")
                 elif result.startswith("__pop__"):
                     idx = int(result.removeprefix("__pop__"))
+                    self._log_action(f"[{name}] git stash pop stash@{{{idx}}}")
                     card.repo.git.stash("pop", f"stash@{{{idx}}}")
                     card.refresh_status()
                     self._update_status_bar(f"Popped stash@{{{idx}}} in {name}")
+                    self._log_action(f"[{name}] stash pop OK")
                 elif result.startswith("__apply__"):
                     idx = int(result.removeprefix("__apply__"))
+                    self._log_action(f"[{name}] git stash apply stash@{{{idx}}}")
                     card.repo.git.stash("apply", f"stash@{{{idx}}}")
                     card.refresh_status()
                     self._update_status_bar(f"Applied stash@{{{idx}}} in {name}")
+                    self._log_action(f"[{name}] stash apply OK")
                 elif result.startswith("__drop__"):
                     idx = int(result.removeprefix("__drop__"))
+                    self._log_action(f"[{name}] git stash drop stash@{{{idx}}}")
                     card.repo.git.stash("drop", f"stash@{{{idx}}}")
                     card.refresh_status()
                     self._update_status_bar(f"Dropped stash@{{{idx}}} in {name}")
+                    self._log_action(f"[{name}] stash drop OK")
             except GitCommandError as e:
+                self._log_action(f"[{name}] ERROR stash: {e}")
                 self._update_status_bar(f"Stash failed: {e}")
 
         self.push_screen(StashModal(stash_entries, has_changes), on_result)
@@ -1382,6 +1441,7 @@ class GitDash(App):
             try:
                 if single_file:
                     filepath, cat = single_file
+                    self._log_action(f"[{name}] revert {filepath} ({cat})")
                     if cat == "staged":
                         card.repo.git.reset("HEAD", "--", filepath)
                         card.repo.git.checkout("--", filepath)
@@ -1390,6 +1450,7 @@ class GitDash(App):
                     elif cat == "untracked":
                         (Path(card.repo.working_dir) / filepath).unlink(missing_ok=True)
                 else:
+                    self._log_action(f"[{name}] revert all changes")
                     card.repo.git.checkout(".")
                     card.repo.git.clean("-fd")
                     if card.status["staged"]:
@@ -1397,7 +1458,9 @@ class GitDash(App):
                         card.repo.git.checkout(".")
                 card.refresh_status()
                 self._update_status_bar(f"Reverted {filepath if single_file else name}")
+                self._log_action(f"[{name}] revert OK")
             except GitCommandError as e:
+                self._log_action(f"[{name}] ERROR revert: {e}")
                 self._update_status_bar(f"Revert failed: {e}")
 
         self.push_screen(ConfirmModal(msg), on_confirm)
@@ -1421,11 +1484,15 @@ class GitDash(App):
             try:
                 if not has_staged:
                     # Nothing staged yet — stage everything
+                    self._log_action(f"[{card.repo_path.name}] git add -A")
                     card.repo.git.add("-A")
+                self._log_action(f"[{card.repo_path.name}] git commit -m '{msg}'")
                 card.repo.git.commit("-m", msg)
                 card.refresh_status()
                 self._update_status_bar(f"Committed to {card.repo_path.name}")
+                self._log_action(f"[{card.repo_path.name}] commit OK")
             except GitCommandError as e:
+                self._log_action(f"[{card.repo_path.name}] ERROR commit: {e}")
                 self._update_status_bar(f"Commit failed: {e}")
 
         self.push_screen(CommitModal(), on_message)
@@ -1497,34 +1564,46 @@ class GitDash(App):
     @work(thread=True)
     def _startup_fetch(self) -> None:
         self._update_status_bar("Fetching all repos...")
+        self._log_action("startup fetch started")
         for card in self.query(RepoCard):
             try:
+                self._log_action(f"[{card.repo_path.name}] git fetch --all --prune")
                 card.repo.git.fetch("--all", "--prune")
                 self.call_from_thread(card.refresh_status)
-            except GitCommandError:
-                pass
+                self._log_action(f"[{card.repo_path.name}] fetch OK")
+            except GitCommandError as e:
+                self._log_action(f"[{card.repo_path.name}] ERROR fetch: {e}")
+        self._log_action("startup fetch complete")
         self._update_status_bar("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  /: search  F: fetch  P: pull")
 
     @work(thread=True)
     def action_fetch_all(self) -> None:
         self._update_status_bar("Fetching all repos...")
+        self._log_action("fetch all started")
         for card in self.query(RepoCard):
             try:
+                self._log_action(f"[{card.repo_path.name}] git fetch --all --prune")
                 card.repo.git.fetch("--all", "--prune")
                 self.call_from_thread(card.refresh_status)
-            except GitCommandError:
-                pass
+                self._log_action(f"[{card.repo_path.name}] fetch OK")
+            except GitCommandError as e:
+                self._log_action(f"[{card.repo_path.name}] ERROR fetch: {e}")
+        self._log_action("fetch all complete")
         self._update_status_bar("All repos fetched")
 
     @work(thread=True)
     def action_pull_all(self) -> None:
         self._update_status_bar("Pulling all repos...")
+        self._log_action("pull all started")
         for card in self.query(RepoCard):
             try:
+                self._log_action(f"[{card.repo_path.name}] git pull")
                 card.repo.git.pull()
                 self.call_from_thread(card.refresh_status)
-            except GitCommandError:
-                pass
+                self._log_action(f"[{card.repo_path.name}] pull OK")
+            except GitCommandError as e:
+                self._log_action(f"[{card.repo_path.name}] ERROR pull: {e}")
+        self._log_action("pull all complete")
         self._update_status_bar("All repos pulled")
 
     def action_search(self) -> None:

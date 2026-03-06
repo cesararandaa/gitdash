@@ -19,6 +19,7 @@ Like the VS Code/Cursor git sidebar, but in your terminal — no editor needed.
 - Stage individual files with toggle picker
 - Open files or repos in your editor (`e` key)
 - Search across all repos with `git grep` (`/` key)
+- Git operations log for debugging (`!` key)
 - Group switcher to jump between repo sets on the fly
 - Auto-refresh every 30 seconds
 - Fetch on startup (configurable)
@@ -86,6 +87,7 @@ uv run python -m gitdash.app --fetch      # fetch all on startup
 | `s` | Stash manager (push, pop, apply, drop) |
 | `x` | Revert all changes in repo |
 | `/` | Search across all repos |
+| `!` | Toggle git operations log |
 | `g` | Switch repo group |
 | `Space` | Collapse / expand repo |
 | `F` | Fetch all repos |
