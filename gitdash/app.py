@@ -350,15 +350,17 @@ class RepoCard(Vertical, can_focus=True):
         # Update sync bar using inline styles (CSS classes have rendering bugs)
         ahead = self.status["ahead"]
         behind = self.status["behind"]
+        has_local = bool(self.status["staged"] or self.status["unstaged"] or self.status["untracked"])
         try:
             sync_bar = self.query_one(f"#syncbtn-{name}", Static)
             if behind or ahead:
                 if behind and ahead:
-                    sync_bar.update(f"Sync Changes  ↑{ahead} ↓{behind}")
+                    label = f"Stash, Pull & Push  ↑{ahead} ↓{behind}" if has_local else f"Sync Changes  ↑{ahead} ↓{behind}"
                 elif behind:
-                    sync_bar.update(f"Pull Changes  ↓{behind}")
+                    label = f"Stash & Pull  ↓{behind}" if has_local else f"Pull Changes  ↓{behind}"
                 else:
-                    sync_bar.update(f"Push Changes  ↑{ahead}")
+                    label = f"Push Changes  ↑{ahead}"
+                sync_bar.update(label)
                 color = "#1177bb" if behind else "#388e3c"
                 sync_bar.styles.background = color
                 sync_bar.styles.color = "white"
