@@ -192,6 +192,92 @@ class DiffModal(ModalScreen):
         self.app.pop_screen()
 
 
+class FileDiffModal(ModalScreen):
+    """Modal showing changed files with per-file diff viewer."""
+
+    BINDINGS = [Binding("escape", "close", "Close"), Binding("q", "close", "Close")]
+
+    def __init__(self, title: str, files: list[tuple[str, str]], repo: Repo) -> None:
+        """files: list of (filepath, category) where category is 'staged'/'unstaged'/'untracked'."""
+        super().__init__()
+        self.title_text = title
+        self.files = files
+        self.repo = repo
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="filediff-dialog"):
+            yield Label(self.title_text, id="diff-title")
+            yield Input(placeholder="Filter files...", id="filediff-filter")
+            yield ListView(id="filediff-list")
+            yield RichLog(id="diff-log", wrap=True, markup=False)
+            yield Button("Close", variant="primary", id="btn-close")
+
+    def on_mount(self) -> None:
+        self._populate_list("")
+
+    def _populate_list(self, filt: str) -> None:
+        lv = self.query_one("#filediff-list", ListView)
+        lv.clear()
+        self._file_map: dict[int, tuple[str, str]] = {}
+        current_cat = None
+        idx = 0
+        for filepath, cat in self.files:
+            if filt and filt not in filepath.lower():
+                continue
+            if cat != current_cat:
+                current_cat = cat
+                label_text = {"staged": "Staged", "unstaged": "Modified", "untracked": "Untracked"}.get(cat, cat)
+                lv.append(ListItem(Label(f"── {label_text} ──")))
+            lv.append(ListItem(Label(f"  {filepath}"), id=f"fd-{idx}"))
+            self._file_map[idx] = (filepath, cat)
+            idx += 1
+        if not self.files:
+            lv.append(ListItem(Label("  (no changes)")))
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "filediff-filter":
+            self._populate_list(event.value.lower())
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.item is None or not event.item.id or not event.item.id.startswith("fd-"):
+            return
+        try:
+            idx = int(event.item.id.removeprefix("fd-"))
+        except ValueError:
+            return
+        if idx not in self._file_map:
+            return
+        filepath, cat = self._file_map[idx]
+        diff_text = self._get_file_diff(filepath, cat)
+        log = self.query_one("#diff-log", RichLog)
+        log.clear()
+        log.write(diff_text)
+
+    def _get_file_diff(self, filepath: str, category: str) -> str:
+        try:
+            if category == "staged":
+                return self.repo.git.diff("--cached", "--", filepath) or "(no diff)"
+            elif category == "unstaged":
+                return self.repo.git.diff("--", filepath) or "(no diff)"
+            else:
+                # Untracked: show file contents as new file
+                full_path = Path(self.repo.working_dir) / filepath
+                if full_path.exists():
+                    content = full_path.read_text(errors="replace")
+                    lines = content.splitlines()
+                    diff_lines = [f"new file: {filepath}", "---", *[f"+{line}" for line in lines]]
+                    return "\n".join(diff_lines)
+                return "(file not found)"
+        except GitCommandError:
+            return "(could not get diff)"
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.app.pop_screen()
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
+
+
 # ---------------------------------------------------------------------------
 # Repo widget
 # ---------------------------------------------------------------------------
@@ -199,7 +285,7 @@ class DiffModal(ModalScreen):
 class RepoCard(Vertical, can_focus=True):
     """A collapsible card showing one repo's status."""
 
-    collapsed = reactive(False)
+    collapsed = reactive(True)
 
     BINDINGS = [
         Binding("b", "branch", "Branch", show=True),
@@ -335,6 +421,27 @@ class RepoCard(Vertical, can_focus=True):
     def action_stash(self) -> None:
         self.app._do_stash(self)
 
+    def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
+        """Open per-file diff when a file is clicked in the Changes tree."""
+        node = event.node
+        # Only act on leaf nodes (files), not category headers
+        if node.children:
+            return
+        filepath = str(node.label).strip()
+        if not filepath:
+            return
+        # Determine category by parent label
+        parent_label = str(node.parent.label).strip() if node.parent else ""
+        if parent_label.startswith("Staged"):
+            cat = "staged"
+        elif parent_label.startswith("Modified"):
+            cat = "unstaged"
+        elif parent_label.startswith("Untracked"):
+            cat = "untracked"
+        else:
+            cat = "unstaged"
+        self.app._do_diff(self, single_file=(filepath, cat))
+
     def action_toggle_collapse(self) -> None:
         self.collapsed = not self.collapsed
 
@@ -360,6 +467,7 @@ class GitDash(App):
         padding: 0;
         border: solid $primary-background;
         margin-bottom: 1;
+        height: auto;
     }
 
     .repo-card:focus {
@@ -409,7 +517,8 @@ class GitDash(App):
 
     Tree {
         height: auto;
-        max-height: 15;
+        min-height: 3;
+        max-height: 20;
         margin: 0;
         padding: 0;
     }
@@ -451,6 +560,27 @@ class GitDash(App):
     #diff-dialog {
         width: 100;
         height: 80%;
+    }
+
+    #filediff-dialog {
+        width: 100;
+        height: 80%;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+        margin: 2 4;
+    }
+
+    #filediff-list {
+        height: auto;
+        max-height: 12;
+        border: solid $primary-background;
+        margin: 1 0;
+    }
+
+    .file-category {
+        color: $text-muted;
+        height: auto;
     }
 
     #commit-title, #branch-title, #diff-title {
@@ -664,16 +794,25 @@ class GitDash(App):
 
         self.push_screen(CommitModal(), on_message)
 
-    def _do_diff(self, card: RepoCard) -> None:
-        try:
-            diff_text = card.repo.git.diff()
-            if not diff_text:
-                diff_text = card.repo.git.diff("--cached")
-            if not diff_text:
-                diff_text = "(no changes)"
-        except GitCommandError:
-            diff_text = "(could not get diff)"
-        self.push_screen(DiffModal(f"Diff — {card.repo_path.name}", diff_text))
+    def _do_diff(self, card: RepoCard, single_file: tuple[str, str] | None = None) -> None:
+        if single_file:
+            # Show diff for a single file directly
+            filepath, cat = single_file
+            modal = FileDiffModal(f"Diff — {card.repo_path.name}", [(filepath, cat)], card.repo)
+            self.push_screen(modal)
+            return
+        # Collect all changed files
+        files: list[tuple[str, str]] = []
+        for f in card.status.get("staged", []):
+            files.append((f, "staged"))
+        for f in card.status.get("unstaged", []):
+            files.append((f, "unstaged"))
+        for f in card.status.get("untracked", []):
+            files.append((f, "untracked"))
+        if not files:
+            self._update_status_bar(f"No changes in {card.repo_path.name}")
+            return
+        self.push_screen(FileDiffModal(f"Diff — {card.repo_path.name}", files, card.repo))
 
     # -- Navigation --
 
