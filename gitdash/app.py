@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import os
-import subprocess
 import sys
 from pathlib import Path
 
@@ -27,7 +25,6 @@ from textual.widgets import (
     Static,
     Tree,
 )
-from textual.widgets.tree import TreeNode
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +200,6 @@ class RepoCard(Vertical, can_focus=True):
     """A collapsible card showing one repo's status."""
 
     collapsed = reactive(False)
-    selected = reactive(False)
 
     BINDINGS = [
         Binding("b", "branch", "Branch", show=True),
@@ -226,12 +222,11 @@ class RepoCard(Vertical, can_focus=True):
             yield Static(self.repo_path.name, classes="repo-name")
             yield Static("", id=f"branch-{self.repo_path.name}", classes="repo-branch")
             yield Static("", id=f"sync-{self.repo_path.name}", classes="repo-sync")
+        yield Static("", id=f"syncbtn-{self.repo_path.name}", classes="sync-btn")
         with Vertical(id=f"body-{self.repo_path.name}", classes="repo-body"):
             yield Tree("Changes", id=f"tree-{self.repo_path.name}")
             with Horizontal(classes="repo-actions"):
                 yield Button("Fetch", id=f"fetch-{self.repo_path.name}", classes="action-btn")
-                yield Button("Pull", id=f"pull-{self.repo_path.name}", classes="action-btn")
-                yield Button("Push", id=f"push-{self.repo_path.name}", classes="action-btn")
                 yield Button("Branch", id=f"brn-{self.repo_path.name}", classes="action-btn")
                 yield Button("Stash", id=f"stash-{self.repo_path.name}", classes="action-btn")
                 yield Button("Commit", id=f"cmt-{self.repo_path.name}", classes="action-btn accent")
@@ -266,6 +261,31 @@ class RepoCard(Vertical, can_focus=True):
         except NoMatches:
             pass
 
+        # Update sync bar using inline styles (CSS classes have rendering bugs)
+        ahead = self.status["ahead"]
+        behind = self.status["behind"]
+        try:
+            sync_bar = self.query_one(f"#syncbtn-{name}", Static)
+            if behind or ahead:
+                if behind and ahead:
+                    sync_bar.update(f"Sync Changes  ↑{ahead} ↓{behind}")
+                elif behind:
+                    sync_bar.update(f"Pull Changes  ↓{behind}")
+                else:
+                    sync_bar.update(f"Push Changes  ↑{ahead}")
+                color = "#1177bb" if behind else "#388e3c"
+                sync_bar.styles.background = color
+                sync_bar.styles.color = "white"
+                sync_bar.styles.text_align = "center"
+                sync_bar.styles.text_style = "bold"
+                sync_bar.styles.padding = (0, 1)
+            else:
+                sync_bar.update("")
+                sync_bar.styles.background = None
+                sync_bar.styles.padding = (0, 0)
+        except NoMatches:
+            pass
+
         try:
             tree: Tree = self.query_one(f"#tree-{name}", Tree)
             tree.clear()
@@ -297,11 +317,11 @@ class RepoCard(Vertical, can_focus=True):
         except NoMatches:
             pass
 
-    def on_focus(self) -> None:
-        self.selected = True
-
-    def on_blur(self) -> None:
-        self.selected = False
+    def on_click(self, event) -> None:
+        """Handle clicks on the sync bar."""
+        widget = event.widget
+        if isinstance(widget, Static) and widget.id and widget.id.startswith("syncbtn-"):
+            self.app._do_sync(self)
 
     def action_branch(self) -> None:
         self.app._do_branch(self)
@@ -410,6 +430,11 @@ class GitDash(App):
     .accent {
         background: $success;
         color: $text;
+    }
+
+    .sync-btn {
+        width: 100%;
+        height: auto;
     }
 
     /* Modals */
@@ -535,10 +560,6 @@ class GitDash(App):
 
         if bid.startswith("fetch-"):
             self._do_fetch(card)
-        elif bid.startswith("pull-"):
-            self._do_pull(card)
-        elif bid.startswith("push-"):
-            self._do_push(card)
         elif bid.startswith("brn-"):
             self._do_branch(card)
         elif bid.startswith("stash-"):
@@ -551,6 +572,23 @@ class GitDash(App):
     # -- Git actions --
 
     @work(thread=True)
+    def _do_sync(self, card: RepoCard) -> None:
+        name = card.repo_path.name
+        behind = card.status.get("behind", 0)
+        ahead = card.status.get("ahead", 0)
+        try:
+            if behind:
+                self._update_status_bar(f"Pulling {name}...")
+                card.repo.git.pull()
+            if ahead:
+                self._update_status_bar(f"Pushing {name}...")
+                card.repo.git.push()
+            self.call_from_thread(card.refresh_status)
+            self._update_status_bar(f"Synced {name}")
+        except GitCommandError as e:
+            self._update_status_bar(f"Sync failed: {e}")
+
+    @work(thread=True)
     def _do_fetch(self, card: RepoCard) -> None:
         name = card.repo_path.name
         self._update_status_bar(f"Fetching {name}...")
@@ -560,28 +598,6 @@ class GitDash(App):
             self._update_status_bar(f"Fetched {name}")
         except GitCommandError as e:
             self._update_status_bar(f"Fetch failed: {e}")
-
-    @work(thread=True)
-    def _do_pull(self, card: RepoCard) -> None:
-        name = card.repo_path.name
-        self._update_status_bar(f"Pulling {name}...")
-        try:
-            card.repo.git.pull()
-            self.call_from_thread(card.refresh_status)
-            self._update_status_bar(f"Pulled {name}")
-        except GitCommandError as e:
-            self._update_status_bar(f"Pull failed: {e}")
-
-    @work(thread=True)
-    def _do_push(self, card: RepoCard) -> None:
-        name = card.repo_path.name
-        self._update_status_bar(f"Pushing {name}...")
-        try:
-            card.repo.git.push()
-            self.call_from_thread(card.refresh_status)
-            self._update_status_bar(f"Pushed {name}")
-        except GitCommandError as e:
-            self._update_status_bar(f"Push failed: {e}")
 
     def _do_branch(self, card: RepoCard) -> None:
         branches = [h.name for h in card.repo.heads]
