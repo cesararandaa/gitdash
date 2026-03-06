@@ -707,16 +707,36 @@ class GitDash(App):
         name = card.repo_path.name
         behind = card.status.get("behind", 0)
         ahead = card.status.get("ahead", 0)
+        has_changes = bool(card.status.get("unstaged") or card.status.get("untracked") or card.status.get("staged"))
+        stashed = False
         try:
+            if behind and has_changes:
+                self._update_status_bar(f"Stashing changes in {name}...")
+                card.repo.git.stash("push", "-u", "-m", "gitdash-auto-stash")
+                stashed = True
             if behind:
                 self._update_status_bar(f"Pulling {name}...")
                 card.repo.git.pull()
             if ahead:
                 self._update_status_bar(f"Pushing {name}...")
                 card.repo.git.push()
+            if stashed:
+                self._update_status_bar(f"Restoring changes in {name}...")
+                try:
+                    card.repo.git.stash("pop")
+                except GitCommandError:
+                    self._update_status_bar(f"Synced {name} — stash pop had conflicts, resolve manually")
+                    self.call_from_thread(card.refresh_status)
+                    return
             self.call_from_thread(card.refresh_status)
             self._update_status_bar(f"Synced {name}")
         except GitCommandError as e:
+            if stashed:
+                try:
+                    card.repo.git.stash("pop")
+                except GitCommandError:
+                    pass
+            self.call_from_thread(card.refresh_status)
             self._update_status_bar(f"Sync failed: {e}")
 
     @work(thread=True)
