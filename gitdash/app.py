@@ -447,6 +447,122 @@ class StageModal(ModalScreen):
         self.app.pop_screen()
 
 
+class SearchModal(ModalScreen):
+    """Modal to search across all repos with git grep."""
+
+    BINDINGS = [Binding("escape", "close", "Close"), Binding("q", "close", "Close")]
+
+    def __init__(self, repo_cards: list[RepoCard]) -> None:
+        super().__init__()
+        self.repo_cards = repo_cards
+        self._next_id = 0
+        self._result_map: dict[int, tuple[str, str, str]] = {}  # idx -> (repo_name, filepath, line)
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="filediff-dialog"):
+            yield Label("Search Across Repos", id="diff-title")
+            yield Input(placeholder="Type to search...", id="search-input")
+            yield ListView(id="search-results")
+            yield RichLog(id="diff-log", wrap=True, markup=False)
+            with Horizontal(id="filediff-buttons"):
+                yield Button("Open in Editor", variant="success", id="btn-search-edit")
+                yield Button("Close", variant="primary", id="btn-close")
+
+    def on_mount(self) -> None:
+        self._selected: tuple[str, str, str] | None = None
+        self.query_one("#search-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        if event.input.id == "search-input":
+            self._run_search(event.value.strip())
+
+    def _run_search(self, query: str) -> None:
+        if not query:
+            return
+        lv = self.query_one("#search-results", ListView)
+        lv.clear()
+        self._result_map = {}
+        log = self.query_one("#diff-log", RichLog)
+        log.clear()
+
+        total = 0
+        for card in self.repo_cards:
+            try:
+                output = card.repo.git.grep("-n", "-I", "--max-count=50", query)
+            except GitCommandError:
+                continue
+            if not output:
+                continue
+            # Add repo header
+            lv.append(ListItem(Label(f"── {card.repo_path.name} ──")))
+            for line in output.splitlines():
+                if total >= 200:
+                    break
+                # Format: filepath:linenum:content
+                idx = self._next_id
+                self._next_id += 1
+                self._result_map[idx] = (card.repo_path.name, line, card.repo.working_dir)
+                # Truncate long lines
+                display = line[:120] + "..." if len(line) > 120 else line
+                lv.append(ListItem(Label(f"  {display}"), id=f"sr-{idx}"))
+                total += 1
+            if total >= 200:
+                break
+
+        if total == 0:
+            lv.append(ListItem(Label(f"  No results for '{query}'")))
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.item is None or not event.item.id or not event.item.id.startswith("sr-"):
+            return
+        try:
+            idx = int(event.item.id.removeprefix("sr-"))
+        except ValueError:
+            return
+        if idx not in self._result_map:
+            return
+        repo_name, line, working_dir = self._result_map[idx]
+        self._selected = (repo_name, line, working_dir)
+        # Show context: parse filepath and show surrounding lines
+        parts = line.split(":", 2)
+        if len(parts) >= 2:
+            filepath = parts[0]
+            try:
+                linenum = int(parts[1])
+                full_path = Path(working_dir) / filepath
+                if full_path.exists():
+                    content = full_path.read_text(errors="replace").splitlines()
+                    start = max(0, linenum - 5)
+                    end = min(len(content), linenum + 5)
+                    context_lines = []
+                    for i in range(start, end):
+                        marker = ">>>" if i == linenum - 1 else "   "
+                        context_lines.append(f"{marker} {i+1:4d} | {content[i]}")
+                    log = self.query_one("#diff-log", RichLog)
+                    log.clear()
+                    log.write(f"{repo_name} / {filepath}:{linenum}\n")
+                    log.write("\n".join(context_lines))
+                    return
+            except (ValueError, OSError):
+                pass
+        log = self.query_one("#diff-log", RichLog)
+        log.clear()
+        log.write(f"{repo_name}: {line}")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-search-edit" and self._selected:
+            _repo_name, line, working_dir = self._selected
+            parts = line.split(":", 2)
+            if parts:
+                filepath = parts[0]
+                self.app._do_open_editor_path(str(Path(working_dir) / filepath))
+            return
+        self.app.pop_screen()
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
+
+
 class DiffModal(ModalScreen):
     """Show a diff in a modal."""
 
@@ -1012,6 +1128,7 @@ class GitDash(App):
         Binding("F", "fetch_all", "Fetch All"),
         Binding("P", "pull_all", "Pull All"),
         Binding("g", "switch_group", "Group"),
+        Binding("slash", "search", "Search"),
     ]
 
     def __init__(self, base_path: Path, repo_paths: list[Path] | None = None, group_name: str | None = None, fetch_on_startup: bool = False, config=None) -> None:
@@ -1033,7 +1150,7 @@ class GitDash(App):
     def on_mount(self) -> None:
         title_suffix = self.group_name or str(self.base_path)
         self.title = f"GitDash — {title_suffix}"
-        self._update_status_bar("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  s: stash  F: fetch all  P: pull all")
+        self._update_status_bar("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  /: search  F: fetch  P: pull")
         cards = list(self.query(RepoCard))
         if cards:
             cards[0].focus()
@@ -1219,6 +1336,18 @@ class GitDash(App):
             return self.config.editor
         return os.environ.get("EDITOR") or os.environ.get("VISUAL")
 
+    def _do_open_editor_path(self, full_path: str) -> None:
+        """Open an absolute file path in the editor."""
+        editor = self._get_editor()
+        if not editor:
+            self._update_status_bar("No editor configured. Set 'editor' in config.toml or $EDITOR")
+            return
+        try:
+            subprocess.Popen([editor, full_path])
+            self._update_status_bar(f"Opened {Path(full_path).name} in {editor}")
+        except FileNotFoundError:
+            self._update_status_bar(f"Editor '{editor}' not found")
+
     def _do_open_editor(self, card: RepoCard, filepath: str | None = None) -> None:
         editor = self._get_editor()
         if not editor:
@@ -1374,7 +1503,7 @@ class GitDash(App):
                 self.call_from_thread(card.refresh_status)
             except GitCommandError:
                 pass
-        self._update_status_bar("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  s: stash  F: fetch all  P: pull all")
+        self._update_status_bar("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  /: search  F: fetch  P: pull")
 
     @work(thread=True)
     def action_fetch_all(self) -> None:
@@ -1397,6 +1526,13 @@ class GitDash(App):
             except GitCommandError:
                 pass
         self._update_status_bar("All repos pulled")
+
+    def action_search(self) -> None:
+        cards = list(self.query(RepoCard))
+        if not cards:
+            self._update_status_bar("No repos to search")
+            return
+        self.push_screen(SearchModal(cards))
 
     def action_switch_group(self) -> None:
         if not self.config or not self.config.groups:
