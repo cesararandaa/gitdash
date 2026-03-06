@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -256,18 +258,31 @@ class MarkdownModal(ModalScreen):
 
     BINDINGS = [Binding("escape", "close", "Close"), Binding("q", "close", "Close")]
 
-    def __init__(self, title: str, content: str) -> None:
+    def __init__(self, title: str, content: str, repo_path: Path | None = None) -> None:
         super().__init__()
         self.title_text = title
         self.content = content
+        self.file_repo_path = repo_path
 
     def compose(self) -> ComposeResult:
         with Vertical(id="diff-dialog"):
             yield Label(self.title_text, id="diff-title")
             yield Markdown(self.content, id="md-viewer")
-            yield Button("Close", variant="primary", id="btn-close")
+            with Horizontal(id="filediff-buttons"):
+                if self.file_repo_path:
+                    yield Button("Open in Editor", variant="success", id="btn-edit-md")
+                yield Button("Close", variant="primary", id="btn-close")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-edit-md" and self.file_repo_path:
+            editor = self.app._get_editor()
+            if editor:
+                target = str(self.file_repo_path / self.title_text)
+                try:
+                    subprocess.Popen([editor, target])
+                except FileNotFoundError:
+                    pass
+            return
         self.app.pop_screen()
 
     def action_close(self) -> None:
@@ -376,6 +391,7 @@ class FileDiffModal(ModalScreen):
             yield ListView(id="filediff-list")
             yield RichLog(id="diff-log", wrap=True, markup=False)
             with Horizontal(id="filediff-buttons"):
+                yield Button("Open in Editor", variant="success", id="btn-edit-file")
                 yield Button("Revert File", variant="error", id="btn-revert-file")
                 yield Button("Close", variant="primary", id="btn-close")
 
@@ -442,6 +458,15 @@ class FileDiffModal(ModalScreen):
             return "(could not get diff)"
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-edit-file":
+            if not self._selected_file:
+                return
+            filepath, _cat = self._selected_file
+            for card in self.app.query(RepoCard):
+                if card.repo.working_dir == self.repo.working_dir:
+                    self.app._do_open_editor(card, filepath)
+                    break
+            return
         if event.button.id == "btn-revert-file":
             if not self._selected_file:
                 return
@@ -494,6 +519,7 @@ class RepoCard(Vertical, can_focus=True):
         Binding("b", "branch", "Branch", show=True),
         Binding("c", "commit", "Commit", show=True),
         Binding("d", "diff", "Diff", show=True),
+        Binding("e", "open_editor", "Edit", show=True),
         Binding("l", "log", "Log", show=True),
         Binding("s", "stash", "Stash", show=True),
         Binding("x", "revert", "Revert", show=True),
@@ -636,6 +662,9 @@ class RepoCard(Vertical, can_focus=True):
     def action_diff(self) -> None:
         self.app._do_diff(self)
 
+    def action_open_editor(self) -> None:
+        self.app._do_open_editor(self)
+
     def action_log(self) -> None:
         self.app._do_log(self)
 
@@ -668,7 +697,7 @@ class RepoCard(Vertical, can_focus=True):
             full_path = Path(self.repo.working_dir) / filepath
             if full_path.exists():
                 content = full_path.read_text(errors="replace")
-                self.app.push_screen(MarkdownModal(filepath, content))
+                self.app.push_screen(MarkdownModal(filepath, content, Path(self.repo.working_dir)))
                 return
         self.app._do_diff(self, single_file=(filepath, cat))
 
@@ -1078,6 +1107,27 @@ class GitDash(App):
                 self._update_status_bar(f"Stash failed: {e}")
 
         self.push_screen(StashModal(stash_entries, has_changes), on_result)
+
+    def _get_editor(self) -> str | None:
+        if self.config and self.config.editor:
+            return self.config.editor
+        return os.environ.get("EDITOR") or os.environ.get("VISUAL")
+
+    def _do_open_editor(self, card: RepoCard, filepath: str | None = None) -> None:
+        editor = self._get_editor()
+        if not editor:
+            self._update_status_bar("No editor configured. Set 'editor' in config.toml or $EDITOR")
+            return
+        if filepath:
+            target = str(Path(card.repo.working_dir) / filepath)
+        else:
+            target = str(card.repo_path)
+        args = [editor, target]
+        try:
+            subprocess.Popen(args)
+            self._update_status_bar(f"Opened {filepath or card.repo_path.name} in {editor}")
+        except FileNotFoundError:
+            self._update_status_bar(f"Editor '{editor}' not found")
 
     def _do_revert(self, card: RepoCard, single_file: tuple[str, str] | None = None) -> None:
         name = card.repo_path.name

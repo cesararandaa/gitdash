@@ -16,6 +16,7 @@ Like the VS Code/Cursor git sidebar, but in your terminal — no editor needed.
 - Stash manager: push, pop, apply, or drop individual stashes
 - Commit log viewer with per-commit diffs
 - Markdown file viewer for `.md` files
+- Open files or repos in your editor (`e` key)
 - Group switcher to jump between repo sets on the fly
 - Auto-refresh every 30 seconds
 - Fetch on startup (configurable)
@@ -47,6 +48,7 @@ Edit the config to define your repo groups:
 ```toml
 default_group = "work"
 fetch_on_startup = true
+editor = "subl"  # or "code", "cursor", "nvim", etc.
 
 [[groups]]
 name = "work"
@@ -76,6 +78,7 @@ uv run python -m gitdash.app --fetch      # fetch all on startup
 | `b` | Switch / create branch (local + remote) |
 | `c` | Commit |
 | `d` | Per-file diff viewer |
+| `e` | Open repo in editor |
 | `l` | Commit log viewer |
 | `s` | Stash manager (push, pop, apply, drop) |
 | `x` | Revert all changes in repo |
@@ -86,7 +89,7 @@ uv run python -m gitdash.app --fetch      # fetch all on startup
 | `r` | Refresh all |
 | `q` | Quit |
 
-Clicking a file in the changes tree opens its diff (or renders it if `.md`).
+Clicking a file in the changes tree opens its diff (or renders it if `.md`). Falls back to `$EDITOR` if no editor is set in config.
 
 The sync bar shows pull/push status and auto-stashes local changes when pulling.
 
