@@ -191,6 +191,64 @@ class BranchModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class StashModal(ModalScreen[str | None]):
+    """Modal to manage stashes: list, pop, apply, drop."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, stash_list: list[str], has_changes: bool) -> None:
+        super().__init__()
+        self.stash_list = stash_list
+        self.has_changes = has_changes
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="branch-dialog"):
+            yield Label("Stash Manager", id="branch-title")
+            yield ListView(id="stash-lv")
+            with Horizontal(id="branch-buttons"):
+                if self.has_changes:
+                    yield Button("Stash", variant="success", id="btn-stash-push")
+                yield Button("Pop", variant="primary", id="btn-stash-pop")
+                yield Button("Apply", variant="primary", id="btn-stash-apply")
+                yield Button("Drop", variant="error", id="btn-stash-drop")
+                yield Button("Cancel", variant="default", id="btn-cancel")
+
+    def on_mount(self) -> None:
+        lv = self.query_one("#stash-lv", ListView)
+        for i, entry in enumerate(self.stash_list):
+            lv.append(ListItem(Label(entry), id=f"st-{i}"))
+        if not self.stash_list and not self.has_changes:
+            lv.append(ListItem(Label("  (no stashes)")))
+
+    def _selected_index(self) -> int | None:
+        lv = self.query_one("#stash-lv", ListView)
+        if lv.highlighted_child is None or not lv.highlighted_child.id:
+            return None
+        try:
+            return int(lv.highlighted_child.id.removeprefix("st-"))
+        except ValueError:
+            return None
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-stash-push":
+            self.dismiss("__push__")
+        elif bid == "btn-stash-pop":
+            idx = self._selected_index()
+            self.dismiss(f"__pop__{idx}" if idx is not None else None)
+        elif bid == "btn-stash-apply":
+            idx = self._selected_index()
+            self.dismiss(f"__apply__{idx}" if idx is not None else None)
+        elif bid == "btn-stash-drop":
+            idx = self._selected_index()
+            self.dismiss(f"__drop__{idx}" if idx is not None else None)
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class DiffModal(ModalScreen):
     """Show a diff in a modal."""
 
@@ -242,6 +300,7 @@ class FileDiffModal(ModalScreen):
 
     def on_mount(self) -> None:
         self._selected_file: tuple[str, str] | None = None
+        self._next_id = 0
         self._populate_list("")
 
     def _populate_list(self, filt: str) -> None:
@@ -249,7 +308,6 @@ class FileDiffModal(ModalScreen):
         lv.clear()
         self._file_map: dict[int, tuple[str, str]] = {}
         current_cat = None
-        idx = 0
         for filepath, cat in self.files:
             if filt and filt not in filepath.lower():
                 continue
@@ -257,9 +315,10 @@ class FileDiffModal(ModalScreen):
                 current_cat = cat
                 label_text = {"staged": "Staged", "unstaged": "Modified", "untracked": "Untracked"}.get(cat, cat)
                 lv.append(ListItem(Label(f"── {label_text} ──")))
+            idx = self._next_id
+            self._next_id += 1
             lv.append(ListItem(Label(f"  {filepath}"), id=f"fd-{idx}"))
             self._file_map[idx] = (filepath, cat)
-            idx += 1
         if not self.files:
             lv.append(ListItem(Label("  (no changes)")))
 
@@ -851,25 +910,43 @@ class GitDash(App):
 
         self.push_screen(BranchModal(branches, current), on_result)
 
-    @work(thread=True)
     def _do_stash(self, card: RepoCard) -> None:
         name = card.repo_path.name
-        if card.status["unstaged"] or card.status["untracked"]:
+        stash_output = card.repo.git.stash("list")
+        stash_entries = stash_output.splitlines() if stash_output else []
+        has_changes = bool(card.status["unstaged"] or card.status["untracked"] or card.status["staged"])
+
+        if not stash_entries and not has_changes:
+            self._update_status_bar(f"Nothing to stash in {name}")
+            return
+
+        def on_result(result: str | None) -> None:
+            if result is None:
+                return
             try:
-                card.repo.git.stash("push", "-u")
-                self.call_from_thread(card.refresh_status)
-                self._update_status_bar(f"Stashed changes in {name}")
+                if result == "__push__":
+                    card.repo.git.stash("push", "-u")
+                    card.refresh_status()
+                    self._update_status_bar(f"Stashed changes in {name}")
+                elif result.startswith("__pop__"):
+                    idx = int(result.removeprefix("__pop__"))
+                    card.repo.git.stash("pop", f"stash@{{{idx}}}")
+                    card.refresh_status()
+                    self._update_status_bar(f"Popped stash@{{{idx}}} in {name}")
+                elif result.startswith("__apply__"):
+                    idx = int(result.removeprefix("__apply__"))
+                    card.repo.git.stash("apply", f"stash@{{{idx}}}")
+                    card.refresh_status()
+                    self._update_status_bar(f"Applied stash@{{{idx}}} in {name}")
+                elif result.startswith("__drop__"):
+                    idx = int(result.removeprefix("__drop__"))
+                    card.repo.git.stash("drop", f"stash@{{{idx}}}")
+                    card.refresh_status()
+                    self._update_status_bar(f"Dropped stash@{{{idx}}} in {name}")
             except GitCommandError as e:
                 self._update_status_bar(f"Stash failed: {e}")
-        elif card.status["stashes"]:
-            try:
-                card.repo.git.stash("pop")
-                self.call_from_thread(card.refresh_status)
-                self._update_status_bar(f"Popped stash in {name}")
-            except GitCommandError as e:
-                self._update_status_bar(f"Stash pop failed: {e}")
-        else:
-            self._update_status_bar(f"Nothing to stash in {name}")
+
+        self.push_screen(StashModal(stash_entries, has_changes), on_result)
 
     def _do_revert(self, card: RepoCard, single_file: tuple[str, str] | None = None) -> None:
         name = card.repo_path.name
