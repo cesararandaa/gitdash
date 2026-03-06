@@ -1,0 +1,12 @@
+[project]
+name = "gitdash"
+version = "0.1.0"
+description = "Multi-repo git TUI dashboard"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=1.0.0",
+    "gitpython>=3.1.0",
+]
+
+[project.scripts]
+gitdash = "gitdash.app:main"
