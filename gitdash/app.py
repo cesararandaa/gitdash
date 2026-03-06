@@ -965,7 +965,13 @@ class GitDash(App):
             self._update_status_bar(f"Fetch failed: {e}")
 
     def _do_branch(self, card: RepoCard) -> None:
-        branches = [h.name for h in card.repo.heads]
+        local_branches = [h.name for h in card.repo.heads]
+        remote_branches = []
+        for ref in card.repo.remotes.origin.refs if card.repo.remotes else []:
+            name = ref.name.replace("origin/", "", 1)
+            if name != "HEAD" and name not in local_branches:
+                remote_branches.append(ref.name)
+        branches = local_branches + remote_branches
         current = card.status.get("branch", "")
 
         def on_result(result: str | None) -> None:
@@ -980,6 +986,14 @@ class GitDash(App):
                         self._update_status_bar(f"Created & switched to {new_name}")
                     except GitCommandError as e:
                         self._update_status_bar(f"Branch create failed: {e}")
+            elif result.startswith("origin/"):
+                local_name = result.replace("origin/", "", 1)
+                try:
+                    card.repo.git.checkout("-b", local_name, "--track", result)
+                    card.refresh_status()
+                    self._update_status_bar(f"Checked out remote branch {local_name}")
+                except GitCommandError as e:
+                    self._update_status_bar(f"Checkout failed: {e}")
             else:
                 try:
                     card.repo.git.checkout(result)
