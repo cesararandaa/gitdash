@@ -7,8 +7,18 @@ Like the VS Code/Cursor git sidebar, but in your terminal — no editor needed.
 ## Features
 
 - See all repos, branches, and changed files in a single view
+- Changes count visible in repo header even when collapsed
 - Fetch, pull, push, commit, stash, diff — per repo or all at once
-- Switch or create branches with a filterable picker
+- Smart sync: auto-stashes local changes before pulling, restores after
+- Switch or create branches with a filterable picker (local + remote)
+- Per-file diff viewer with file list and filter
+- Revert changes per file or per repo
+- Stash manager: push, pop, apply, or drop individual stashes
+- Commit log viewer with per-commit diffs
+- Markdown file viewer for `.md` files
+- Group switcher to jump between repo sets on the fly
+- Auto-refresh every 30 seconds
+- Fetch on startup (configurable)
 - Fully keyboard-driven
 
 ## Install
@@ -36,6 +46,7 @@ Edit the config to define your repo groups:
 
 ```toml
 default_group = "work"
+fetch_on_startup = true
 
 [[groups]]
 name = "work"
@@ -53,6 +64,7 @@ Then just run:
 ```bash
 uv run python -m gitdash.app              # opens default group
 uv run python -m gitdash.app --group personal  # opens a specific group
+uv run python -m gitdash.app --fetch      # fetch all on startup
 ```
 
 ## Keybindings
@@ -61,15 +73,22 @@ uv run python -m gitdash.app --group personal  # opens a specific group
 |-----|--------|
 | `j` / `Down` | Next repo |
 | `k` / `Up` | Previous repo |
-| `b` | Switch / create branch |
+| `b` | Switch / create branch (local + remote) |
 | `c` | Commit |
-| `d` | View diff |
-| `s` | Stash / pop |
+| `d` | Per-file diff viewer |
+| `l` | Commit log viewer |
+| `s` | Stash manager (push, pop, apply, drop) |
+| `x` | Revert all changes in repo |
+| `g` | Switch repo group |
 | `Space` | Collapse / expand repo |
 | `F` | Fetch all repos |
 | `P` | Pull all repos |
 | `r` | Refresh all |
 | `q` | Quit |
+
+Clicking a file in the changes tree opens its diff (or renders it if `.md`).
+
+The sync bar shows pull/push status and auto-stashes local changes when pulling.
 
 ## License
 
