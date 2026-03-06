@@ -143,39 +143,40 @@ class BranchModal(ModalScreen[str | None]):
         super().__init__()
         self.branches = branches
         self.current = current
+        self._next_id = 0
 
     def compose(self) -> ComposeResult:
         with Vertical(id="branch-dialog"):
             yield Label("Switch Branch", id="branch-title")
             yield Input(placeholder="Filter or new branch name...", id="branch-filter")
-            yield ListView(
-                *[
-                    ListItem(Label(f"{'* ' if b == self.current else '  '}{b}"), id=f"br-{i}")
-                    for i, b in enumerate(self.branches)
-                ],
-                id="branch-list",
-            )
+            yield ListView(id="branch-list")
             with Horizontal(id="branch-buttons"):
                 yield Button("Switch", variant="success", id="btn-switch")
                 yield Button("Create & Switch", variant="primary", id="btn-create")
                 yield Button("Cancel", variant="error", id="btn-cancel")
 
     def on_mount(self) -> None:
+        self._populate_list("")
         self.query_one("#branch-filter", Input).focus()
 
-    def on_input_changed(self, event: Input.Changed) -> None:
-        filt = event.value.lower()
+    def _populate_list(self, filt: str) -> None:
         lv = self.query_one("#branch-list", ListView)
         lv.clear()
-        for i, b in enumerate(self.branches):
-            if filt in b.lower():
-                lv.append(ListItem(Label(f"{'* ' if b == self.current else '  '}{b}"), id=f"br-{i}"))
+        for b in self.branches:
+            if filt and filt not in b.lower():
+                continue
+            idx = self._next_id
+            self._next_id += 1
+            lv.append(ListItem(Label(f"{'* ' if b == self.current else '  '}{b}"), id=f"br-{idx}"))
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        self._populate_list(event.value.lower())
 
     def _selected_branch(self) -> str | None:
         lv = self.query_one("#branch-list", ListView)
         if lv.highlighted_child is not None:
             label = lv.highlighted_child.query_one(Label)
-            return label.renderable.strip().lstrip("* ").strip()
+            return str(label.render()).strip().lstrip("* ").strip()
         return None
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
@@ -778,14 +779,16 @@ class GitDash(App):
         Binding("q", "quit", "Quit"),
         Binding("F", "fetch_all", "Fetch All"),
         Binding("P", "pull_all", "Pull All"),
+        Binding("g", "switch_group", "Group"),
     ]
 
-    def __init__(self, base_path: Path, repo_paths: list[Path] | None = None, group_name: str | None = None, fetch_on_startup: bool = False) -> None:
+    def __init__(self, base_path: Path, repo_paths: list[Path] | None = None, group_name: str | None = None, fetch_on_startup: bool = False, config=None) -> None:
         super().__init__()
         self.base_path = base_path
         self.repo_paths = repo_paths or find_repos(base_path)
         self.group_name = group_name
         self.fetch_on_startup = fetch_on_startup
+        self.config = config
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -1119,6 +1122,43 @@ class GitDash(App):
                 pass
         self._update_status_bar("All repos pulled")
 
+    def action_switch_group(self) -> None:
+        if not self.config or not self.config.groups:
+            self._update_status_bar("No groups configured")
+            return
+        group_names = [g.name for g in self.config.groups]
+        self.push_screen(
+            BranchModal(group_names, self.group_name or ""),
+            self._on_group_selected,
+        )
+
+    def _on_group_selected(self, result: str | None) -> None:
+        if result is None or result.startswith("__create__"):
+            return
+        group = self.config.get_group(result)
+        if not group:
+            self._update_status_bar(f"Group '{result}' not found")
+            return
+        if not group.repos:
+            self._update_status_bar(f"No repos in group '{result}'")
+            return
+        # Remove old cards
+        scroll = self.query_one("#main-scroll", VerticalScroll)
+        for card in list(self.query(RepoCard)):
+            card.remove()
+        # Update state
+        self.group_name = group.name
+        self.base_path = group.path
+        self.repo_paths = group.repos
+        self.title = f"GitDash — {group.name}"
+        # Mount new cards
+        for rp in self.repo_paths:
+            scroll.mount(RepoCard(rp, classes="repo-card", id=f"card-{rp.name}"))
+        cards = list(self.query(RepoCard))
+        if cards:
+            cards[0].focus()
+        self._update_status_bar(f"Switched to group: {group.name}")
+
 
 def main() -> None:
     from gitdash.config import load_config, init_config, CONFIG_FILE
@@ -1178,7 +1218,7 @@ def main() -> None:
         sys.exit(1)
 
     fetch = fetch or config.fetch_on_startup
-    app = GitDash(group.path, group.repos, group.name, fetch_on_startup=fetch)
+    app = GitDash(group.path, group.repos, group.name, fetch_on_startup=fetch, config=config)
     app.run()
 
 
