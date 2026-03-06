@@ -77,6 +77,32 @@ def short_status(repo: Repo) -> dict:
 # Modals
 # ---------------------------------------------------------------------------
 
+class ConfirmModal(ModalScreen[bool]):
+    """Simple yes/no confirmation modal."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, message: str) -> None:
+        super().__init__()
+        self.message = message
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="commit-dialog"):
+            yield Label(self.message, id="commit-title")
+            with Horizontal(id="commit-buttons"):
+                yield Button("Yes", variant="error", id="btn-yes")
+                yield Button("Cancel", variant="primary", id="btn-no")
+
+    def on_mount(self) -> None:
+        self.query_one("#btn-no", Button).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "btn-yes")
+
+    def action_cancel(self) -> None:
+        self.dismiss(False)
+
+
 class CommitModal(ModalScreen[str | None]):
     """Modal to enter a commit message."""
 
@@ -210,9 +236,12 @@ class FileDiffModal(ModalScreen):
             yield Input(placeholder="Filter files...", id="filediff-filter")
             yield ListView(id="filediff-list")
             yield RichLog(id="diff-log", wrap=True, markup=False)
-            yield Button("Close", variant="primary", id="btn-close")
+            with Horizontal(id="filediff-buttons"):
+                yield Button("Revert File", variant="error", id="btn-revert-file")
+                yield Button("Close", variant="primary", id="btn-close")
 
     def on_mount(self) -> None:
+        self._selected_file: tuple[str, str] | None = None
         self._populate_list("")
 
     def _populate_list(self, filt: str) -> None:
@@ -248,6 +277,7 @@ class FileDiffModal(ModalScreen):
         if idx not in self._file_map:
             return
         filepath, cat = self._file_map[idx]
+        self._selected_file = (filepath, cat)
         diff_text = self._get_file_diff(filepath, cat)
         log = self.query_one("#diff-log", RichLog)
         log.clear()
@@ -272,7 +302,40 @@ class FileDiffModal(ModalScreen):
             return "(could not get diff)"
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-revert-file":
+            if not self._selected_file:
+                return
+            filepath, cat = self._selected_file
+            self.app.push_screen(
+                ConfirmModal(f"Discard changes to {filepath}?"),
+                lambda confirmed: self._revert_file(filepath, cat) if confirmed else None,
+            )
+            return
         self.app.pop_screen()
+
+    def _revert_file(self, filepath: str, cat: str) -> None:
+        try:
+            if cat == "staged":
+                self.repo.git.reset("HEAD", "--", filepath)
+                self.repo.git.checkout("--", filepath)
+            elif cat == "unstaged":
+                self.repo.git.checkout("--", filepath)
+            elif cat == "untracked":
+                (Path(self.repo.working_dir) / filepath).unlink(missing_ok=True)
+            # Remove from file list and refresh
+            self.files = [(f, c) for f, c in self.files if not (f == filepath and c == cat)]
+            self._populate_list(self.query_one("#filediff-filter", Input).value.lower())
+            self.query_one("#diff-log", RichLog).clear()
+            self._selected_file = None
+            # Refresh the parent card
+            for card in self.app.query(RepoCard):
+                if card.repo.working_dir == self.repo.working_dir:
+                    card.refresh_status()
+                    break
+        except GitCommandError as e:
+            log = self.query_one("#diff-log", RichLog)
+            log.clear()
+            log.write(f"Revert failed: {e}")
 
     def action_close(self) -> None:
         self.app.pop_screen()
@@ -292,6 +355,7 @@ class RepoCard(Vertical, can_focus=True):
         Binding("c", "commit", "Commit", show=True),
         Binding("d", "diff", "Diff", show=True),
         Binding("s", "stash", "Stash", show=True),
+        Binding("x", "revert", "Revert", show=True),
         Binding("space", "toggle_collapse", "Toggle", show=True),
         Binding("enter", "toggle_collapse", "Toggle", show=False),
     ]
@@ -422,6 +486,9 @@ class RepoCard(Vertical, can_focus=True):
 
     def action_stash(self) -> None:
         self.app._do_stash(self)
+
+    def action_revert(self) -> None:
+        self.app._do_revert(self)
 
     def on_tree_node_selected(self, event: Tree.NodeSelected) -> None:
         """Open per-file diff when a file is clicked in the Changes tree."""
@@ -583,6 +650,12 @@ class GitDash(App):
     .file-category {
         color: $text-muted;
         height: auto;
+    }
+
+    #filediff-buttons {
+        height: 3;
+        align: center middle;
+        margin-top: 1;
     }
 
     #commit-title, #branch-title, #diff-title {
@@ -797,6 +870,44 @@ class GitDash(App):
                 self._update_status_bar(f"Stash pop failed: {e}")
         else:
             self._update_status_bar(f"Nothing to stash in {name}")
+
+    def _do_revert(self, card: RepoCard, single_file: tuple[str, str] | None = None) -> None:
+        name = card.repo_path.name
+        if single_file:
+            filepath, cat = single_file
+            msg = f"Discard changes to {filepath}?"
+        else:
+            total = len(card.status["staged"]) + len(card.status["unstaged"]) + len(card.status["untracked"])
+            if not total:
+                self._update_status_bar(f"Nothing to revert in {name}")
+                return
+            msg = f"Discard ALL changes in {name}? ({total} files)"
+
+        def on_confirm(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            try:
+                if single_file:
+                    filepath, cat = single_file
+                    if cat == "staged":
+                        card.repo.git.reset("HEAD", "--", filepath)
+                        card.repo.git.checkout("--", filepath)
+                    elif cat == "unstaged":
+                        card.repo.git.checkout("--", filepath)
+                    elif cat == "untracked":
+                        (Path(card.repo.working_dir) / filepath).unlink(missing_ok=True)
+                else:
+                    card.repo.git.checkout(".")
+                    card.repo.git.clean("-fd")
+                    if card.status["staged"]:
+                        card.repo.git.reset("HEAD")
+                        card.repo.git.checkout(".")
+                card.refresh_status()
+                self._update_status_bar(f"Reverted {filepath if single_file else name}")
+            except GitCommandError as e:
+                self._update_status_bar(f"Revert failed: {e}")
+
+        self.push_screen(ConfirmModal(msg), on_confirm)
 
     def _do_commit(self, card: RepoCard) -> None:
         # Stage all changes first
