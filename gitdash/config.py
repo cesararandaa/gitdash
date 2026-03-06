@@ -29,6 +29,7 @@ class RepoGroup:
 class Config:
     groups: list[RepoGroup] = field(default_factory=list)
     default_group: str | None = None
+    fetch_on_startup: bool = False
 
     @property
     def all_repos(self) -> list[Path]:
@@ -65,6 +66,7 @@ def load_config() -> Config:
 
     config = Config()
     config.default_group = data.get("default_group")
+    config.fetch_on_startup = data.get("fetch_on_startup", False)
 
     for group_data in data.get("groups", []):
         name = group_data.get("name", "unnamed")

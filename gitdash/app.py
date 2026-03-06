@@ -256,12 +256,10 @@ class RepoCard(Vertical, can_focus=True):
             pass
 
         sync_parts = []
-        if self.status["ahead"]:
-            sync_parts.append(f"+{self.status['ahead']}")
-        if self.status["behind"]:
-            sync_parts.append(f"-{self.status['behind']}")
+        if self.status["ahead"] or self.status["behind"]:
+            sync_parts.append(f"↑{self.status['ahead']}↓{self.status['behind']}")
         if self.status["stashes"]:
-            sync_parts.append(f"${self.status['stashes']}")
+            sync_parts.append(f"stash:{self.status['stashes']}")
         try:
             sync_lbl = self.query_one(f"#sync-{name}", Static)
             sync_lbl.update(" ".join(sync_parts))
@@ -476,11 +474,12 @@ class GitDash(App):
         Binding("P", "pull_all", "Pull All"),
     ]
 
-    def __init__(self, base_path: Path, repo_paths: list[Path] | None = None, group_name: str | None = None) -> None:
+    def __init__(self, base_path: Path, repo_paths: list[Path] | None = None, group_name: str | None = None, fetch_on_startup: bool = False) -> None:
         super().__init__()
         self.base_path = base_path
         self.repo_paths = repo_paths or find_repos(base_path)
         self.group_name = group_name
+        self.fetch_on_startup = fetch_on_startup
 
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
@@ -497,6 +496,8 @@ class GitDash(App):
         cards = list(self.query(RepoCard))
         if cards:
             cards[0].focus()
+        if self.fetch_on_startup:
+            self._startup_fetch()
 
     def _update_status_bar(self, msg: str) -> None:
         try:
@@ -698,6 +699,17 @@ class GitDash(App):
         self._update_status_bar("Refreshed")
 
     @work(thread=True)
+    def _startup_fetch(self) -> None:
+        self._update_status_bar("Fetching all repos...")
+        for card in self.query(RepoCard):
+            try:
+                card.repo.git.fetch("--all", "--prune")
+                self.call_from_thread(card.refresh_status)
+            except GitCommandError:
+                pass
+        self._update_status_bar("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  s: stash  F: fetch all  P: pull all")
+
+    @work(thread=True)
     def action_fetch_all(self) -> None:
         self._update_status_bar("Fetching all repos...")
         for card in self.query(RepoCard):
@@ -732,6 +744,8 @@ def main() -> None:
         print("Edit it to add your repo groups, then run: gitdash")
         return
 
+    fetch = "--fetch" in args
+
     # If a path is given, use it directly (backwards compatible)
     if args and not args[0].startswith("-"):
         base = Path(args[0]).expanduser()
@@ -739,7 +753,7 @@ def main() -> None:
             print(f"Error: {base} is not a directory")
             sys.exit(1)
         repo_paths = find_repos(base)
-        app = GitDash(base, repo_paths)
+        app = GitDash(base, repo_paths, fetch_on_startup=fetch)
         app.run()
         return
 
@@ -775,7 +789,8 @@ def main() -> None:
         print(f"No repos found in group '{group.name}' ({group.path})")
         sys.exit(1)
 
-    app = GitDash(group.path, group.repos, group.name)
+    fetch = fetch or config.fetch_on_startup
+    app = GitDash(group.path, group.repos, group.name, fetch_on_startup=fetch)
     app.run()
 
 
