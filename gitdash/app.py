@@ -250,6 +250,62 @@ class StashModal(ModalScreen[str | None]):
         self.dismiss(None)
 
 
+class LogModal(ModalScreen):
+    """Modal showing commit log with per-commit diff viewer."""
+
+    BINDINGS = [Binding("escape", "close", "Close"), Binding("q", "close", "Close")]
+
+    def __init__(self, title: str, repo: Repo, max_commits: int = 50) -> None:
+        super().__init__()
+        self.title_text = title
+        self.repo = repo
+        self.max_commits = max_commits
+        self._next_id = 0
+        self._commit_map: dict[int, str] = {}
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="filediff-dialog"):
+            yield Label(self.title_text, id="diff-title")
+            yield ListView(id="log-list")
+            yield RichLog(id="diff-log", wrap=True, markup=False)
+            yield Button("Close", variant="primary", id="btn-close")
+
+    def on_mount(self) -> None:
+        lv = self.query_one("#log-list", ListView)
+        for commit in self.repo.iter_commits(max_count=self.max_commits):
+            short_sha = commit.hexsha[:7]
+            date = commit.authored_datetime.strftime("%Y-%m-%d %H:%M")
+            msg = commit.message.strip().split("\n")[0][:60]
+            idx = self._next_id
+            self._next_id += 1
+            self._commit_map[idx] = commit.hexsha
+            lv.append(ListItem(Label(f"{short_sha}  {date}  {msg}"), id=f"lg-{idx}"))
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
+        if event.item is None or not event.item.id or not event.item.id.startswith("lg-"):
+            return
+        try:
+            idx = int(event.item.id.removeprefix("lg-"))
+        except ValueError:
+            return
+        sha = self._commit_map.get(idx)
+        if not sha:
+            return
+        try:
+            diff_text = self.repo.git.show("--stat", "--patch", sha)
+        except GitCommandError:
+            diff_text = "(could not get diff)"
+        log = self.query_one("#diff-log", RichLog)
+        log.clear()
+        log.write(diff_text)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.app.pop_screen()
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
+
+
 class DiffModal(ModalScreen):
     """Show a diff in a modal."""
 
@@ -414,6 +470,7 @@ class RepoCard(Vertical, can_focus=True):
         Binding("b", "branch", "Branch", show=True),
         Binding("c", "commit", "Commit", show=True),
         Binding("d", "diff", "Diff", show=True),
+        Binding("l", "log", "Log", show=True),
         Binding("s", "stash", "Stash", show=True),
         Binding("x", "revert", "Revert", show=True),
         Binding("space", "toggle_collapse", "Toggle", show=True),
@@ -554,6 +611,9 @@ class RepoCard(Vertical, can_focus=True):
 
     def action_diff(self) -> None:
         self.app._do_diff(self)
+
+    def action_log(self) -> None:
+        self.app._do_log(self)
 
     def action_stash(self) -> None:
         self.app._do_stash(self)
@@ -717,7 +777,7 @@ class GitDash(App):
         margin: 2 4;
     }
 
-    #filediff-list {
+    #filediff-list, #log-list {
         height: auto;
         max-height: 12;
         border: solid $primary-background;
@@ -1005,6 +1065,9 @@ class GitDash(App):
                 self._update_status_bar(f"Revert failed: {e}")
 
         self.push_screen(ConfirmModal(msg), on_confirm)
+
+    def _do_log(self, card: RepoCard) -> None:
+        self.push_screen(LogModal(f"Log — {card.repo_path.name}", card.repo))
 
     def _do_commit(self, card: RepoCard) -> None:
         # Stage all changes first
