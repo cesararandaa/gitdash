@@ -653,6 +653,7 @@ class GitDash(App):
             cards[0].focus()
         if self.fetch_on_startup:
             self._startup_fetch()
+        self.set_interval(30, self._auto_refresh)
 
     def _update_status_bar(self, msg: str) -> None:
         try:
@@ -846,6 +847,11 @@ class GitDash(App):
         cards[prv].scroll_visible()
 
     # -- Global actions --
+
+    def _auto_refresh(self) -> None:
+        """Silently refresh all repo statuses."""
+        for card in self.query(RepoCard):
+            card.refresh_status()
 
     def action_refresh_all(self) -> None:
         self._update_status_bar("Refreshing all...")
