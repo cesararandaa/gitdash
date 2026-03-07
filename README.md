@@ -89,6 +89,9 @@ uv run python -m gitdash.app --fetch      # fetch all on startup
 | `/` | Search across all repos |
 | `!` | Toggle git operations log |
 | `g` | Switch repo group |
+| `J` (Shift+J) | Move repo down |
+| `K` (Shift+K) | Move repo up |
+| `S` (Shift+S) | Save repo order to config |
 | `Space` | Collapse / expand repo |
 | `F` | Fetch all repos |
 | `P` | Pull all repos |

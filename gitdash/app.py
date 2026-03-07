@@ -1140,6 +1140,9 @@ class GitDash(App):
         Binding("g", "switch_group", "Group"),
         Binding("slash", "search", "Search"),
         Binding("exclamation_mark", "toggle_log", "Log"),
+        Binding("J", "move_repo_down", "Move Down"),
+        Binding("K", "move_repo_up", "Move Up"),
+        Binding("S", "save_repo_order", "Save Order"),
     ]
 
     def __init__(self, base_path: Path, repo_paths: list[Path] | None = None, group_name: str | None = None, fetch_on_startup: bool = False, config=None) -> None:
@@ -1547,6 +1550,51 @@ class GitDash(App):
         prv = (idx - 1) % len(cards)
         cards[prv].focus()
         cards[prv].scroll_visible()
+
+    def _move_repo(self, direction: int) -> None:
+        """Move the focused repo up (-1) or down (+1) in the list."""
+        cards = self._get_cards()
+        if len(cards) < 2:
+            return
+        idx = self._focused_card_index()
+        if idx < 0:
+            return
+        new_idx = idx + direction
+        if new_idx < 0 or new_idx >= len(cards):
+            return
+        # Swap in repo_paths
+        self.repo_paths[idx], self.repo_paths[new_idx] = self.repo_paths[new_idx], self.repo_paths[idx]
+        # Swap cards in the DOM using move_child
+        scroll = self.query_one("#main-scroll", VerticalScroll)
+        card = cards[idx]
+        if direction == 1:
+            # Moving down: place after the card below
+            scroll.move_child(card, after=cards[new_idx])
+        else:
+            # Moving up: place before the card above
+            scroll.move_child(card, before=cards[new_idx])
+        card.focus()
+        card.scroll_visible()
+        self._log_action(f"Moved {self.repo_paths[new_idx].name} {'down' if direction == 1 else 'up'}")
+
+    def action_move_repo_down(self) -> None:
+        self._move_repo(1)
+
+    def action_move_repo_up(self) -> None:
+        self._move_repo(-1)
+
+    def action_save_repo_order(self) -> None:
+        """Save current repo order to config.toml."""
+        if not self.group_name or not self.config:
+            self._update_status_bar("No group active — cannot save order")
+            return
+        from gitdash.config import save_repo_order
+        try:
+            save_repo_order(self.group_name, self.repo_paths)
+            self._update_status_bar(f"Repo order saved for group '{self.group_name}'")
+            self._log_action(f"Saved repo order for group '{self.group_name}'")
+        except Exception as e:
+            self._update_status_bar(f"Failed to save order: {e}")
 
     # -- Global actions --
 

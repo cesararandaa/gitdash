@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -109,3 +110,70 @@ path = "~/code"
 """
     CONFIG_FILE.write_text(default)
     return CONFIG_FILE
+
+
+def save_repo_order(group_name: str, repo_paths: list[Path]) -> None:
+    """Update the repos list for a group in config.toml, preserving other config."""
+    if not CONFIG_FILE.exists():
+        raise FileNotFoundError(f"Config file not found: {CONFIG_FILE}")
+
+    text = CONFIG_FILE.read_text()
+
+    # Build the new repos line
+    repo_names = [rp.name for rp in repo_paths]
+    repos_value = "[" + ", ".join(f'"{name}"' for name in repo_names) + "]"
+    repos_line = f"repos = {repos_value}"
+
+    # Find the [[groups]] block with matching name and update/insert repos
+    # Strategy: split into lines, find the group, update repos within that block
+    lines = text.splitlines(keepends=True)
+    result = []
+    i = 0
+    found = False
+
+    while i < len(lines):
+        line = lines[i]
+
+        # Detect start of a [[groups]] block
+        if re.match(r'^\s*\[\[groups\]\]\s*$', line.rstrip()):
+            block_start = i
+            result.append(line)
+            i += 1
+
+            # Collect lines in this block until next section or EOF
+            block_lines = []
+            name_match = False
+            repos_line_idx = None
+
+            while i < len(lines):
+                bline = lines[i]
+                # Stop at next [[...]] or [...] section header
+                if re.match(r'^\s*\[', bline.rstrip()):
+                    break
+                # Check if this is the name line for our target group
+                m = re.match(r'^\s*name\s*=\s*"([^"]+)"', bline)
+                if m and m.group(1) == group_name:
+                    name_match = True
+                # Track existing repos line
+                if re.match(r'^\s*repos\s*=', bline):
+                    repos_line_idx = len(block_lines)
+                block_lines.append(bline)
+                i += 1
+
+            if name_match:
+                found = True
+                if repos_line_idx is not None:
+                    # Replace existing repos line
+                    block_lines[repos_line_idx] = repos_line + "\n"
+                else:
+                    # Insert repos after the last key in the block
+                    block_lines.append(repos_line + "\n")
+            result.extend(block_lines)
+        else:
+            result.append(line)
+            i += 1
+
+    if not found:
+        raise ValueError(f"Group '{group_name}' not found in config")
+
+    CONFIG_FILE.write_text("".join(result))
