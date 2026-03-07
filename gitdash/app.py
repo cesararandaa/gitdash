@@ -44,6 +44,29 @@ def find_repos(base: Path) -> list[Path]:
     return repos
 
 
+def style_diff(diff_text: str) -> Text:
+    """Convert raw diff/patch text into a Rich Text with per-line coloring."""
+    styled = Text()
+    for i, line in enumerate(diff_text.splitlines()):
+        if i > 0:
+            styled.append("\n")
+        if line.startswith("diff --git") or line.startswith("---") or line.startswith("+++"):
+            styled.append(line, style="bold")
+        elif line.startswith("@@"):
+            styled.append(line, style="cyan bold")
+        elif line.startswith("+"):
+            styled.append(line, style="green")
+        elif line.startswith("-"):
+            styled.append(line, style="red")
+        elif line.startswith(("index ", "old mode", "new mode", "new file mode",
+                              "deleted file mode", "similarity index", "rename",
+                              "copy ", "commit ", "Author:", "Date:")):
+            styled.append(line, style="dim")
+        else:
+            styled.append(line)
+    return styled
+
+
 def short_status(repo: Repo) -> dict:
     """Return a dict summarising the repo status."""
     branch = repo.active_branch.name if not repo.head.is_detached else "DETACHED"
@@ -443,7 +466,7 @@ class LogModal(ModalScreen):
             diff_text = "(could not get diff)"
         log = self.query_one("#diff-log", RichLog)
         log.clear()
-        log.write(diff_text)
+        log.write(style_diff(diff_text))
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.app.pop_screen()
@@ -688,7 +711,7 @@ class DiffModal(ModalScreen):
 
     def on_mount(self) -> None:
         log = self.query_one("#diff-log", RichLog)
-        log.write(self.diff_text or "(no diff)")
+        log.write(style_diff(self.diff_text) if self.diff_text else "(no diff)")
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.app.pop_screen()
@@ -762,7 +785,7 @@ class FileDiffModal(ModalScreen):
         diff_text = self._get_file_diff(filepath, cat)
         log = self.query_one("#diff-log", RichLog)
         log.clear()
-        log.write(diff_text)
+        log.write(style_diff(diff_text))
 
     def _get_file_diff(self, filepath: str, category: str) -> str:
         try:
