@@ -11,10 +11,10 @@ Like the VS Code/Cursor git sidebar, but in your terminal — no editor needed.
 - Fetch, pull, push, commit, stash, diff — per repo or all at once
 - Smart sync: auto-stashes local changes before pulling, restores after
 - Switch or create branches with a filterable picker (local + remote)
-- Per-file diff viewer with file list and filter
+- Per-file diff viewer with file list and filter, syntax-highlighted
 - Revert changes per file or per repo
 - Stash manager: push, pop, apply, or drop individual stashes
-- Commit log viewer with per-commit diffs
+- Commit log viewer with per-commit diffs, syntax-highlighted
 - Markdown file viewer for `.md` files
 - Stage individual files with toggle picker
 - Open files or repos in your editor (`e` key)
