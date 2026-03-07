@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 
 from git import Repo, GitCommandError, InvalidGitRepositoryError
+from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -18,7 +19,6 @@ from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
-    Footer,
     Header,
     Input,
     Label,
@@ -176,6 +176,72 @@ class MessageModal(ModalScreen[None]):
 
     def action_close(self) -> None:
         self.app.pop_screen()
+
+
+class ShortcutBar(Vertical):
+    """Curated bottom bar showing the primary shortcuts."""
+
+    REPO_ITEMS: list[tuple[str, str]] = [
+        ("a", "stage"),
+        ("b", "branch"),
+        ("c", "commit"),
+        ("d", "diff"),
+        ("e", "edit"),
+        ("l", "log"),
+        ("s", "stash"),
+        ("x", "discard"),
+    ]
+    GLOBAL_ITEMS: list[tuple[str, str]] = [
+        ("space", "toggle"),
+        ("j/k", "move"),
+        ("J/K", "reorder"),
+        ("/", "search"),
+        ("F", "fetch"),
+        ("P", "pull"),
+        ("g", "group"),
+        ("r", "refresh"),
+        ("!", "ops log"),
+        ("?", "help"),
+        ("q", "quit"),
+    ]
+
+    def compose(self) -> ComposeResult:
+        yield Static(id="shortcut-repo", classes="shortcut-line")
+        yield Static(id="shortcut-global", classes="shortcut-line")
+
+    def on_mount(self) -> None:
+        colors = self.app.get_css_variables()
+        title_style = f"bold {colors.get('primary', '#0178D4')}"
+        key_style = f"bold {colors.get('accent', '#FEA62B')}"
+        label_style = colors.get("foreground", "#E0E0E0")
+        sep_color = colors.get("foreground-muted", "#808080")
+        # Strip alpha suffix — Rich doesn't support 8-digit hex colors
+        sep_style = sep_color[:7] if len(sep_color) == 9 and sep_color.startswith("#") else sep_color
+
+        self.query_one("#shortcut-repo", Static).update(
+            self._build_line("Repo", self.REPO_ITEMS, title_style, key_style, label_style, sep_style),
+        )
+        self.query_one("#shortcut-global", Static).update(
+            self._build_line("Global", self.GLOBAL_ITEMS, title_style, key_style, label_style, sep_style),
+        )
+
+    @staticmethod
+    def _build_line(
+        title: str,
+        items: list[tuple[str, str]],
+        title_style: str,
+        key_style: str,
+        label_style: str,
+        sep_style: str,
+    ) -> Text:
+        text = Text()
+        text.append(f"{title} ", style=title_style)
+        for index, (key, label) in enumerate(items):
+            if index:
+                text.append(" \u2022 ", style=sep_style)
+            text.append(key, style=key_style)
+            text.append(f" {label}", style=label_style)
+        return text
 
 
 class BranchModal(ModalScreen[str | None]):
@@ -1202,6 +1268,19 @@ class GitDash(App):
         background: $primary-background;
         color: $text-muted;
     }
+
+    #shortcut-bar {
+        dock: bottom;
+        height: 2;
+        padding: 0 1;
+        background: $primary-background;
+        color: $text;
+        border-top: solid $surface;
+    }
+
+    .shortcut-line {
+        height: 1;
+    }
     """
 
     BINDINGS = [
@@ -1236,13 +1315,13 @@ class GitDash(App):
             for rp in self.repo_paths:
                 yield RepoCard(rp, classes="repo-card", id=f"card-{rp.name}")
         yield RichLog(id="git-log", wrap=True, markup=False)
+        yield ShortcutBar(id="shortcut-bar")
         yield Static("", id="status-bar")
-        yield Footer()
 
     def on_mount(self) -> None:
         title_suffix = self.group_name or str(self.base_path)
         self.title = f"GitDash — {title_suffix}"
-        self._update_status_bar("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  /: search  ?: help")
+        self._update_status_bar("Ready")
         cards = list(self.query(RepoCard))
         if cards:
             cards[0].focus()
@@ -1724,7 +1803,7 @@ class GitDash(App):
             except GitCommandError as e:
                 self._log_action_from_thread(f"[{card.repo_path.name}] ERROR fetch: {e}")
         self._log_action_from_thread("startup fetch complete")
-        self._update_status_bar_from_thread("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  /: search  ?: help")
+        self._update_status_bar_from_thread("Ready")
 
     @work(thread=True)
     def action_fetch_all(self) -> None:
