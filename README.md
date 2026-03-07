@@ -20,6 +20,7 @@ Like the VS Code/Cursor git sidebar, but in your terminal — no editor needed.
 - Open files or repos in your editor (`e` key)
 - Search across all repos with `git grep` (`/` key)
 - Git operations log for debugging (`!` key)
+- Built-in help overlay with keybindings and status cues (`?` key)
 - Group switcher to jump between repo sets on the fly
 - Auto-refresh every 30 seconds
 - Fetch on startup (configurable)
@@ -89,6 +90,7 @@ uv run python -m gitdash.app --fetch      # fetch all on startup
 | `/` | Search across all repos |
 | `!` | Toggle git operations log |
 | `g` | Switch repo group |
+| `?` | Show help |
 | `J` (Shift+J) | Move repo down |
 | `K` (Shift+K) | Move repo up |
 | `S` (Shift+S) | Save repo order to config |
@@ -101,6 +103,8 @@ uv run python -m gitdash.app --fetch      # fetch all on startup
 Clicking a file in the changes tree opens its diff (or renders it if `.md`). Falls back to `$EDITOR` if no editor is set in config.
 
 The sync bar shows pull/push status and auto-stashes local changes when pulling.
+
+Repo headers now show `staged/mod/new` change counts, `↑/↓` sync counts, and flags like `CONFLICT`, `NO-UPSTREAM`, and `CLEAN` for faster scanning.
 
 ## License
 

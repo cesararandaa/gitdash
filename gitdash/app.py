@@ -64,6 +64,7 @@ def short_status(repo: Repo) -> dict:
     unstaged = [d.a_path for d in repo.index.diff(None)]
     untracked = repo.untracked_files
     stashes = len(list(repo.git.stash("list").splitlines())) if repo.git.stash("list") else 0
+    conflicted = bool(repo.index.unmerged_blobs())
 
     return {
         "branch": branch,
@@ -74,6 +75,9 @@ def short_status(repo: Repo) -> dict:
         "unstaged": unstaged,
         "untracked": untracked,
         "stashes": stashes,
+        "conflicted": conflicted,
+        "dirty": bool(staged or unstaged or untracked),
+        "detached": repo.head.is_detached,
     }
 
 
@@ -86,16 +90,29 @@ class ConfirmModal(ModalScreen[bool]):
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, message: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        details: str | None = None,
+        confirm_label: str = "Yes",
+        cancel_label: str = "Cancel",
+        confirm_variant: str = "error",
+    ) -> None:
         super().__init__()
         self.message = message
+        self.details = details
+        self.confirm_label = confirm_label
+        self.cancel_label = cancel_label
+        self.confirm_variant = confirm_variant
 
     def compose(self) -> ComposeResult:
         with Vertical(id="commit-dialog"):
             yield Label(self.message, id="commit-title")
+            if self.details:
+                yield Static(self.details, id="confirm-details")
             with Horizontal(id="commit-buttons"):
-                yield Button("Yes", variant="error", id="btn-yes")
-                yield Button("Cancel", variant="primary", id="btn-no")
+                yield Button(self.confirm_label, variant=self.confirm_variant, id="btn-yes")
+                yield Button(self.cancel_label, variant="primary", id="btn-no")
 
     def on_mount(self) -> None:
         self.query_one("#btn-no", Button).focus()
@@ -136,6 +153,29 @@ class CommitModal(ModalScreen[str | None]):
 
     def action_cancel(self) -> None:
         self.dismiss(None)
+
+
+class MessageModal(ModalScreen[None]):
+    """Generic read-only modal for help and operation summaries."""
+
+    BINDINGS = [Binding("escape", "close", "Close"), Binding("q", "close", "Close")]
+
+    def __init__(self, title: str, content: str) -> None:
+        super().__init__()
+        self.title_text = title
+        self.content = content
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="diff-dialog"):
+            yield Label(self.title_text, id="diff-title")
+            yield Markdown(self.content, id="md-viewer")
+            yield Button("Close", variant="primary", id="btn-close")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.app.pop_screen()
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
 
 
 class BranchModal(ModalScreen[str | None]):
@@ -760,6 +800,7 @@ class RepoCard(Vertical, can_focus=True):
             yield Static("", id=f"branch-{self.repo_path.name}", classes="repo-branch")
             yield Static("", id=f"changes-{self.repo_path.name}", classes="repo-changes")
             yield Static("", id=f"sync-{self.repo_path.name}", classes="repo-sync")
+            yield Static("", id=f"flags-{self.repo_path.name}", classes="repo-flags")
         yield Static("", id=f"syncbtn-{self.repo_path.name}", classes="sync-btn")
         with Vertical(id=f"body-{self.repo_path.name}", classes="repo-body"):
             yield Tree("Changes", id=f"tree-{self.repo_path.name}")
@@ -779,7 +820,8 @@ class RepoCard(Vertical, can_focus=True):
             self.status = short_status(self.repo)
         except (InvalidGitRepositoryError, Exception):
             self.status = {"branch": "?", "tracking": None, "ahead": 0, "behind": 0,
-                           "staged": [], "unstaged": [], "untracked": [], "stashes": 0}
+                           "staged": [], "unstaged": [], "untracked": [], "stashes": 0,
+                           "conflicted": False, "dirty": False, "detached": False}
 
         name = self.repo_path.name
         try:
@@ -788,13 +830,20 @@ class RepoCard(Vertical, can_focus=True):
         except NoMatches:
             pass
 
-        total_changes = len(self.status["staged"]) + len(self.status["unstaged"]) + len(self.status["untracked"])
+        staged_count = len(self.status["staged"])
+        unstaged_count = len(self.status["unstaged"])
+        untracked_count = len(self.status["untracked"])
+        total_changes = staged_count + unstaged_count + untracked_count
         try:
             changes_lbl = self.query_one(f"#changes-{name}", Static)
-            if total_changes:
-                changes_lbl.update(f"({total_changes} changes)")
-            else:
-                changes_lbl.update("")
+            change_parts = []
+            if staged_count:
+                change_parts.append(f"staged:{staged_count}")
+            if unstaged_count:
+                change_parts.append(f"mod:{unstaged_count}")
+            if untracked_count:
+                change_parts.append(f"new:{untracked_count}")
+            changes_lbl.update(" ".join(change_parts))
         except NoMatches:
             pass
 
@@ -806,6 +855,21 @@ class RepoCard(Vertical, can_focus=True):
         try:
             sync_lbl = self.query_one(f"#sync-{name}", Static)
             sync_lbl.update(" ".join(sync_parts))
+        except NoMatches:
+            pass
+
+        try:
+            flags_lbl = self.query_one(f"#flags-{name}", Static)
+            flags = []
+            if self.status["conflicted"]:
+                flags.append("CONFLICT")
+            if not self.status["detached"] and not self.status["tracking"]:
+                flags.append("NO-UPSTREAM")
+            if not total_changes and not sync_parts and not flags:
+                flags.append("CLEAN")
+            flags_lbl.update(" ".join(flags))
+            flags_lbl.styles.color = "#f38ba8" if self.status["conflicted"] else "#89dceb"
+            flags_lbl.styles.text_style = "bold" if self.status["conflicted"] else "none"
         except NoMatches:
             pass
 
@@ -998,6 +1062,12 @@ class GitDash(App):
         margin-left: 1;
     }
 
+    .repo-flags {
+        color: #89dceb;
+        width: auto;
+        margin-left: 1;
+    }
+
     .repo-body {
         padding: 0 1;
         height: auto;
@@ -1084,6 +1154,12 @@ class GitDash(App):
         text-align: center;
     }
 
+    #confirm-details {
+        color: $text-muted;
+        margin-bottom: 1;
+        width: 100%;
+    }
+
     #commit-buttons, #branch-buttons {
         height: 3;
         align: center middle;
@@ -1139,6 +1215,7 @@ class GitDash(App):
         Binding("P", "pull_all", "Pull All"),
         Binding("g", "switch_group", "Group"),
         Binding("slash", "search", "Search"),
+        Binding("question_mark", "help", "Help"),
         Binding("exclamation_mark", "toggle_log", "Log"),
         Binding("J", "move_repo_down", "Move Down"),
         Binding("K", "move_repo_up", "Move Up"),
@@ -1165,7 +1242,7 @@ class GitDash(App):
     def on_mount(self) -> None:
         title_suffix = self.group_name or str(self.base_path)
         self.title = f"GitDash — {title_suffix}"
-        self._update_status_bar("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  /: search  F: fetch  P: pull")
+        self._update_status_bar("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  /: search  ?: help")
         cards = list(self.query(RepoCard))
         if cards:
             cards[0].focus()
@@ -1195,6 +1272,15 @@ class GitDash(App):
             self.query_one("#status-bar", Static).update(msg)
         except NoMatches:
             pass
+
+    def _update_status_bar_from_thread(self, msg: str) -> None:
+        self.call_from_thread(self._update_status_bar, msg)
+
+    def _log_action_from_thread(self, msg: str) -> None:
+        self.call_from_thread(self._log_action, msg)
+
+    def _show_message(self, title: str, content: str) -> None:
+        self.push_screen(MessageModal(title, content))
 
     def _card_for_button(self, button_id: str) -> RepoCard | None:
         # button ids are like "fetch-reponame"
@@ -1246,56 +1332,56 @@ class GitDash(App):
         stashed = False
         try:
             if behind and has_changes:
-                self._update_status_bar(f"Stashing changes in {name}...")
-                self._log_action(f"[{name}] git stash push -u -m 'gitdash-auto-stash'")
+                self._update_status_bar_from_thread(f"Stashing changes in {name}...")
+                self._log_action_from_thread(f"[{name}] git stash push -u -m 'gitdash-auto-stash'")
                 card.repo.git.stash("push", "-u", "-m", "gitdash-auto-stash")
                 stashed = True
             if behind:
-                self._update_status_bar(f"Pulling {name}...")
-                self._log_action(f"[{name}] git pull")
+                self._update_status_bar_from_thread(f"Pulling {name}...")
+                self._log_action_from_thread(f"[{name}] git pull")
                 card.repo.git.pull()
-                self._log_action(f"[{name}] pull OK")
+                self._log_action_from_thread(f"[{name}] pull OK")
             if ahead:
-                self._update_status_bar(f"Pushing {name}...")
-                self._log_action(f"[{name}] git push")
+                self._update_status_bar_from_thread(f"Pushing {name}...")
+                self._log_action_from_thread(f"[{name}] git push")
                 card.repo.git.push()
-                self._log_action(f"[{name}] push OK")
+                self._log_action_from_thread(f"[{name}] push OK")
             if stashed:
-                self._update_status_bar(f"Restoring changes in {name}...")
-                self._log_action(f"[{name}] git stash pop")
+                self._update_status_bar_from_thread(f"Restoring changes in {name}...")
+                self._log_action_from_thread(f"[{name}] git stash pop")
                 try:
                     card.repo.git.stash("pop")
                 except GitCommandError as e:
-                    self._log_action(f"[{name}] ERROR stash pop: {e}")
-                    self._update_status_bar(f"Synced {name} — stash pop had conflicts, resolve manually")
+                    self._log_action_from_thread(f"[{name}] ERROR stash pop: {e}")
+                    self._update_status_bar_from_thread(f"Synced {name} — stash pop had conflicts, resolve manually")
                     self.call_from_thread(card.refresh_status)
                     return
             self.call_from_thread(card.refresh_status)
-            self._update_status_bar(f"Synced {name}")
-            self._log_action(f"[{name}] sync complete")
+            self._update_status_bar_from_thread(f"Synced {name}")
+            self._log_action_from_thread(f"[{name}] sync complete")
         except GitCommandError as e:
-            self._log_action(f"[{name}] ERROR sync: {e}")
+            self._log_action_from_thread(f"[{name}] ERROR sync: {e}")
             if stashed:
                 try:
                     card.repo.git.stash("pop")
                 except GitCommandError:
                     pass
             self.call_from_thread(card.refresh_status)
-            self._update_status_bar(f"Sync failed: {e}")
+            self._update_status_bar_from_thread(f"Sync failed: {e}")
 
     @work(thread=True)
     def _do_fetch(self, card: RepoCard) -> None:
         name = card.repo_path.name
-        self._update_status_bar(f"Fetching {name}...")
-        self._log_action(f"[{name}] git fetch --all --prune")
+        self._update_status_bar_from_thread(f"Fetching {name}...")
+        self._log_action_from_thread(f"[{name}] git fetch --all --prune")
         try:
             card.repo.git.fetch("--all", "--prune")
             self.call_from_thread(card.refresh_status)
-            self._update_status_bar(f"Fetched {name}")
-            self._log_action(f"[{name}] fetch OK")
+            self._update_status_bar_from_thread(f"Fetched {name}")
+            self._log_action_from_thread(f"[{name}] fetch OK")
         except GitCommandError as e:
-            self._log_action(f"[{name}] ERROR fetch: {e}")
-            self._update_status_bar(f"Fetch failed: {e}")
+            self._log_action_from_thread(f"[{name}] ERROR fetch: {e}")
+            self._update_status_bar_from_thread(f"Fetch failed: {e}")
 
     def _do_branch(self, card: RepoCard) -> None:
         local_branches = [h.name for h in card.repo.heads]
@@ -1430,13 +1516,23 @@ class GitDash(App):
         name = card.repo_path.name
         if single_file:
             filepath, cat = single_file
-            msg = f"Discard changes to {filepath}?"
+            label = {"staged": "staged", "unstaged": "modified", "untracked": "untracked"}.get(cat, cat)
+            msg = "Discard file changes?"
+            details = f"Repo: {name}\nFile: {filepath}\nState: {label}"
         else:
-            total = len(card.status["staged"]) + len(card.status["unstaged"]) + len(card.status["untracked"])
+            staged_count = len(card.status["staged"])
+            unstaged_count = len(card.status["unstaged"])
+            untracked_count = len(card.status["untracked"])
+            total = staged_count + unstaged_count + untracked_count
             if not total:
                 self._update_status_bar(f"Nothing to revert in {name}")
                 return
-            msg = f"Discard ALL changes in {name}? ({total} files)"
+            msg = "Discard all local changes?"
+            details = (
+                f"Repo: {name}\n"
+                f"Files affected: {total}\n"
+                f"Staged: {staged_count}  Modified: {unstaged_count}  Untracked: {untracked_count}"
+            )
 
         def on_confirm(confirmed: bool) -> None:
             if not confirmed:
@@ -1466,7 +1562,10 @@ class GitDash(App):
                 self._log_action(f"[{name}] ERROR revert: {e}")
                 self._update_status_bar(f"Revert failed: {e}")
 
-        self.push_screen(ConfirmModal(msg), on_confirm)
+        self.push_screen(
+            ConfirmModal(msg, details=details, confirm_label="Discard", confirm_variant="error"),
+            on_confirm,
+        )
 
     def _do_stage(self, card: RepoCard) -> None:
         self.push_screen(StageModal(card.repo))
@@ -1611,48 +1710,81 @@ class GitDash(App):
 
     @work(thread=True)
     def _startup_fetch(self) -> None:
-        self._update_status_bar("Fetching all repos...")
-        self._log_action("startup fetch started")
-        for card in self.query(RepoCard):
+        cards = self.call_from_thread(self._get_cards)
+        total = len(cards)
+        self._update_status_bar_from_thread("Fetching all repos...")
+        self._log_action_from_thread("startup fetch started")
+        for index, card in enumerate(cards, start=1):
             try:
-                self._log_action(f"[{card.repo_path.name}] git fetch --all --prune")
+                self._update_status_bar_from_thread(f"Fetching {card.repo_path.name} ({index}/{total})...")
+                self._log_action_from_thread(f"[{card.repo_path.name}] git fetch --all --prune")
                 card.repo.git.fetch("--all", "--prune")
                 self.call_from_thread(card.refresh_status)
-                self._log_action(f"[{card.repo_path.name}] fetch OK")
+                self._log_action_from_thread(f"[{card.repo_path.name}] fetch OK")
             except GitCommandError as e:
-                self._log_action(f"[{card.repo_path.name}] ERROR fetch: {e}")
-        self._log_action("startup fetch complete")
-        self._update_status_bar("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  /: search  F: fetch  P: pull")
+                self._log_action_from_thread(f"[{card.repo_path.name}] ERROR fetch: {e}")
+        self._log_action_from_thread("startup fetch complete")
+        self._update_status_bar_from_thread("Ready  |  j/k: navigate  b: branch  c: commit  d: diff  /: search  ?: help")
 
     @work(thread=True)
     def action_fetch_all(self) -> None:
-        self._update_status_bar("Fetching all repos...")
-        self._log_action("fetch all started")
-        for card in self.query(RepoCard):
+        cards = self.call_from_thread(self._get_cards)
+        total = len(cards)
+        successes = 0
+        failures: list[str] = []
+        self._update_status_bar_from_thread("Fetching all repos...")
+        self._log_action_from_thread("fetch all started")
+        for index, card in enumerate(cards, start=1):
             try:
-                self._log_action(f"[{card.repo_path.name}] git fetch --all --prune")
+                self._update_status_bar_from_thread(f"Fetching {card.repo_path.name} ({index}/{total})...")
+                self._log_action_from_thread(f"[{card.repo_path.name}] git fetch --all --prune")
                 card.repo.git.fetch("--all", "--prune")
                 self.call_from_thread(card.refresh_status)
-                self._log_action(f"[{card.repo_path.name}] fetch OK")
+                successes += 1
+                self._log_action_from_thread(f"[{card.repo_path.name}] fetch OK")
             except GitCommandError as e:
-                self._log_action(f"[{card.repo_path.name}] ERROR fetch: {e}")
-        self._log_action("fetch all complete")
-        self._update_status_bar("All repos fetched")
+                failures.append(f"- `{card.repo_path.name}`: `{e}`")
+                self._log_action_from_thread(f"[{card.repo_path.name}] ERROR fetch: {e}")
+        self._log_action_from_thread("fetch all complete")
+        self._update_status_bar_from_thread(f"Fetch complete: {successes}/{total} repos")
+        if failures:
+            summary = "\n".join([
+                f"Fetched `{successes}` of `{total}` repos.",
+                "",
+                "Failures:",
+                *failures,
+            ])
+            self.call_from_thread(self._show_message, "Fetch All Summary", summary)
 
     @work(thread=True)
     def action_pull_all(self) -> None:
-        self._update_status_bar("Pulling all repos...")
-        self._log_action("pull all started")
-        for card in self.query(RepoCard):
+        cards = self.call_from_thread(self._get_cards)
+        total = len(cards)
+        successes = 0
+        failures: list[str] = []
+        self._update_status_bar_from_thread("Pulling all repos...")
+        self._log_action_from_thread("pull all started")
+        for index, card in enumerate(cards, start=1):
             try:
-                self._log_action(f"[{card.repo_path.name}] git pull")
+                self._update_status_bar_from_thread(f"Pulling {card.repo_path.name} ({index}/{total})...")
+                self._log_action_from_thread(f"[{card.repo_path.name}] git pull")
                 card.repo.git.pull()
                 self.call_from_thread(card.refresh_status)
-                self._log_action(f"[{card.repo_path.name}] pull OK")
+                successes += 1
+                self._log_action_from_thread(f"[{card.repo_path.name}] pull OK")
             except GitCommandError as e:
-                self._log_action(f"[{card.repo_path.name}] ERROR pull: {e}")
-        self._log_action("pull all complete")
-        self._update_status_bar("All repos pulled")
+                failures.append(f"- `{card.repo_path.name}`: `{e}`")
+                self._log_action_from_thread(f"[{card.repo_path.name}] ERROR pull: {e}")
+        self._log_action_from_thread("pull all complete")
+        self._update_status_bar_from_thread(f"Pull complete: {successes}/{total} repos")
+        if failures:
+            summary = "\n".join([
+                f"Pulled `{successes}` of `{total}` repos.",
+                "",
+                "Failures:",
+                *failures,
+            ])
+            self.call_from_thread(self._show_message, "Pull All Summary", summary)
 
     def action_search(self) -> None:
         cards = list(self.query(RepoCard))
@@ -1660,6 +1792,42 @@ class GitDash(App):
             self._update_status_bar("No repos to search")
             return
         self.push_screen(SearchModal(cards))
+
+    def action_help(self) -> None:
+        self._show_message(
+            "GitDash Help",
+            "\n".join(
+                [
+                    "## Global",
+                    "- `j` / `k`: move between repos",
+                    "- `Space` / `Enter`: collapse or expand repo",
+                    "- `/`: search across repos",
+                    "- `F`: fetch all repos",
+                    "- `P`: pull all repos",
+                    "- `g`: switch group",
+                    "- `!`: toggle git operations log",
+                    "- `J` / `K`: move repo down or up",
+                    "- `S`: save repo order",
+                    "",
+                    "## Focused Repo",
+                    "- `a`: stage or unstage files",
+                    "- `b`: switch or create branch",
+                    "- `c`: commit staged changes, or stage all and commit",
+                    "- `d`: inspect file diffs",
+                    "- `e`: open repo or file in editor",
+                    "- `l`: view commit log and patch",
+                    "- `s`: manage stashes",
+                    "- `x`: discard local changes",
+                    "",
+                    "## Status Cues",
+                    "- `staged:n mod:n new:n`: staged, modified, and untracked counts",
+                    "- `↑n↓n`: ahead and behind tracking branch",
+                    "- `CONFLICT`: merge conflicts need attention",
+                    "- `NO-UPSTREAM`: current branch is not tracking a remote",
+                    "- `CLEAN`: no local changes and nothing to sync",
+                ]
+            ),
+        )
 
     def action_switch_group(self) -> None:
         if not self.config or not self.config.groups:
