@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -660,7 +661,7 @@ class SearchModal(ModalScreen):
             try:
                 linenum = int(parts[1])
                 full_path = Path(working_dir) / filepath
-                if full_path.exists():
+                if full_path.exists() and full_path.is_file():
                     content = full_path.read_text(errors="replace").splitlines()
                     start = max(0, linenum - 5)
                     end = min(len(content), linenum + 5)
@@ -796,6 +797,8 @@ class FileDiffModal(ModalScreen):
             else:
                 # Untracked: show file contents as new file
                 full_path = Path(self.repo.working_dir) / filepath
+                if full_path.is_dir():
+                    return f"(directory: {filepath})"
                 if full_path.exists():
                     content = full_path.read_text(errors="replace")
                     lines = content.splitlines()
@@ -834,7 +837,11 @@ class FileDiffModal(ModalScreen):
             elif cat == "unstaged":
                 self.repo.git.checkout("--", filepath)
             elif cat == "untracked":
-                (Path(self.repo.working_dir) / filepath).unlink(missing_ok=True)
+                p = Path(self.repo.working_dir) / filepath
+                if p.is_dir():
+                    shutil.rmtree(p, ignore_errors=True)
+                else:
+                    p.unlink(missing_ok=True)
             # Remove from file list and refresh
             self.files = [(f, c) for f, c in self.files if not (f == filepath and c == cat)]
             self._populate_list(self.query_one("#filediff-filter", Input).value.lower())
@@ -1071,7 +1078,7 @@ class RepoCard(Vertical, can_focus=True):
             cat = "unstaged"
         if filepath.endswith(".md"):
             full_path = Path(self.repo.working_dir) / filepath
-            if full_path.exists():
+            if full_path.is_file():
                 content = full_path.read_text(errors="replace")
                 self.app.push_screen(MarkdownModal(filepath, content, Path(self.repo.working_dir)))
                 return
