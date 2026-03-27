@@ -1806,22 +1806,20 @@ class GitDash(App):
 
     # -- Global actions --
 
-    @work(thread=True, exclusive=True, group="refresh")
-    def _refresh_all(self, *, silent: bool = False) -> None:
-        """Refresh all repo statuses. Shows status bar feedback unless silent."""
-        if not silent:
-            self._update_status_bar_from_thread("Refreshing all...")
+    @work(thread=True, exclusive=True, group="auto-refresh")
+    def _auto_refresh(self) -> None:
+        """Silently refresh all repo statuses on a timer."""
         cards = self.call_from_thread(self._get_cards)
         for card in cards:
             self.call_from_thread(card.refresh_status)
-        if not silent:
-            self._update_status_bar_from_thread("Refreshed")
 
-    def _auto_refresh(self) -> None:
-        self._refresh_all(silent=True)
-
+    @work(thread=True, exclusive=True, group="manual-refresh")
     def action_refresh_all(self) -> None:
-        self._refresh_all(silent=False)
+        self._update_status_bar_from_thread("Refreshing all...")
+        cards = self.call_from_thread(self._get_cards)
+        for card in cards:
+            self.call_from_thread(card.refresh_status)
+        self._update_status_bar_from_thread("Refreshed")
 
     @work(thread=True)
     def _startup_fetch(self) -> None:
