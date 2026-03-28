@@ -131,7 +131,7 @@ def short_status(repo: Repo) -> dict:
                 # For rename entries (2), filename is after tab
                 if line.startswith("2 "):
                     tab_parts = line.split("\t")
-                    fname = tab_parts[-1] if tab_parts else parts[-1]
+                    fname = tab_parts[1] if len(tab_parts) >= 2 else parts[-1]
                 else:
                     fname = parts[8]
                 if xy[0] not in (".", "?"):
@@ -139,8 +139,11 @@ def short_status(repo: Repo) -> dict:
                 if xy[1] not in (".", "?"):
                     unstaged.append(fname)
 
-    stash_output = repo.git.stash("list")
-    stashes = len(stash_output.splitlines()) if stash_output else 0
+    try:
+        stash_output = repo.git.stash("list")
+        stashes = len(stash_output.splitlines()) if stash_output else 0
+    except GitCommandError:
+        stashes = 0
 
     return {
         "branch": branch,
