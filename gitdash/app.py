@@ -1827,9 +1827,13 @@ class GitDash(App):
 
     @work(thread=True, exclusive=True, group="auto-refresh")
     def _auto_refresh(self) -> None:
-        """Silently refresh all repo statuses on a timer."""
+        """Silently fetch and refresh all repo statuses on a timer."""
         cards = self.call_from_thread(self._get_cards)
         for card in cards:
+            try:
+                card.repo.git.fetch("--all", "--prune")
+            except GitCommandError:
+                pass
             status = card._read_status()
             self.call_from_thread(card.apply_status, status)
 
@@ -1837,7 +1841,13 @@ class GitDash(App):
     def action_refresh_all(self) -> None:
         self._update_status_bar_from_thread("Refreshing all...")
         cards = self.call_from_thread(self._get_cards)
-        for card in cards:
+        total = len(cards)
+        for index, card in enumerate(cards, start=1):
+            self._update_status_bar_from_thread(f"Refreshing {card.repo_path.name} ({index}/{total})...")
+            try:
+                card.repo.git.fetch("--all", "--prune")
+            except GitCommandError:
+                pass
             status = card._read_status()
             self.call_from_thread(card.apply_status, status)
         self._update_status_bar_from_thread("Refreshed")
