@@ -915,7 +915,7 @@ class RepoCard(Vertical, can_focus=True):
         try:
             repo = Repo(self.repo_path)
             status = short_status(repo)
-            self.repo = repo
+            status["_repo"] = repo
             return status
         except (InvalidGitRepositoryError, Exception):
             return {"branch": "?", "tracking": None, "ahead": 0, "behind": 0,
@@ -924,13 +924,14 @@ class RepoCard(Vertical, can_focus=True):
 
     def apply_status(self, status: dict) -> None:
         """Update widgets from a pre-computed status dict (must run on main thread)."""
+        if "_repo" in status:
+            self.repo = status.pop("_repo")
         self.status = status
         self._update_widgets()
 
     def refresh_status(self) -> None:
         """Read git status and update widgets (convenience for main-thread callers)."""
-        self.status = self._read_status()
-        self._update_widgets()
+        self.apply_status(self._read_status())
 
     def _update_widgets(self) -> None:
         """Push self.status into all child widgets (must run on main thread)."""
