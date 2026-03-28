@@ -989,7 +989,7 @@ class RepoCard(Vertical, can_focus=True):
             if self.status["conflicted"]:
                 flags_lbl.styles.color = self._theme_color("error", "#f38ba8")
                 flags_lbl.styles.text_style = "bold"
-            elif not total_changes and not sync_parts:
+            elif not total_changes and not sync_parts and (self.status["detached"] or self.status["tracking"]):
                 flags_lbl.styles.color = self._theme_color("success", "#a6e3a1")
                 flags_lbl.styles.text_style = "none"
             else:
@@ -1002,7 +1002,7 @@ class RepoCard(Vertical, can_focus=True):
         self.remove_class("clean-card", "dirty-card", "conflict-card")
         if self.status["conflicted"]:
             self.add_class("conflict-card")
-        elif total_changes:
+        elif total_changes or sync_parts:
             self.add_class("dirty-card")
         else:
             self.add_class("clean-card")
@@ -1017,9 +1017,9 @@ class RepoCard(Vertical, can_focus=True):
                 if behind and ahead:
                     label = f"\u2261 Stash, Pull & Push  \u2191{ahead} \u2193{behind}" if has_local else f"\u21c5 Sync  \u2191{ahead} \u2193{behind}"
                 elif behind:
-                    label = f"\u2261 Stash & Pull  \u2193{behind}" if has_local else f"\u2193 Pull  \u2193{behind}"
+                    label = f"\u2261 Stash & Pull  \u2193{behind}" if has_local else f"Pull  \u2193{behind}"
                 else:
-                    label = f"\u2191 Push  \u2191{ahead}"
+                    label = f"Push  \u2191{ahead}"
                 sync_bar.update(label)
                 color = self._theme_color("primary", "#89b4fa") if behind else self._theme_color("success", "#a6e3a1")
                 sync_bar.styles.background = color
