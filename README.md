@@ -22,7 +22,7 @@ Like the VS Code/Cursor git sidebar, but in your terminal — no editor needed.
 - Git operations log for debugging (`!` key)
 - Built-in help overlay with keybindings and status cues (`?` key)
 - Group switcher to jump between repo sets on the fly
-- Auto-refresh every 30 seconds
+- Auto-refresh every 60 seconds
 - Fetch on startup (configurable)
 - Fully keyboard-driven
 
