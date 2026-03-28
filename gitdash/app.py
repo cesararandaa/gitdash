@@ -119,10 +119,10 @@ def short_status(repo: Repo) -> dict:
         elif line.startswith("u "):
             # Unmerged (conflict) entry
             conflicted = True
-            # Extract filename (last field)
-            parts = line.split("\t")
-            if parts:
-                unstaged.append(parts[-1])
+            # Extract filename: u XY sub m1 m2 m3 mW h1 h2 h3 <path>
+            u_parts = line.split(" ", 10)
+            if len(u_parts) == 11:
+                unstaged.append(u_parts[10])
         elif line.startswith("1 ") or line.startswith("2 "):
             # Changed entry: field index 1 has XY status
             parts = line.split(" ", 8)
