@@ -910,15 +910,31 @@ class RepoCard(Vertical, can_focus=True):
     def on_mount(self) -> None:
         self.refresh_status()
 
-    def refresh_status(self) -> None:
+    def _read_status(self) -> dict:
+        """Read git status from disk (safe to call from any thread)."""
         try:
-            self.repo = Repo(self.repo_path)
-            self.status = short_status(self.repo)
+            repo = Repo(self.repo_path)
+            status = short_status(repo)
+            status["_repo"] = repo
+            return status
         except (InvalidGitRepositoryError, Exception):
-            self.status = {"branch": "?", "tracking": None, "ahead": 0, "behind": 0,
-                           "staged": [], "unstaged": [], "untracked": [], "stashes": 0,
-                           "conflicted": False, "dirty": False, "detached": False}
+            return {"branch": "?", "tracking": None, "ahead": 0, "behind": 0,
+                    "staged": [], "unstaged": [], "untracked": [], "stashes": 0,
+                    "conflicted": False, "dirty": False, "detached": False}
 
+    def apply_status(self, status: dict) -> None:
+        """Update widgets from a pre-computed status dict (must run on main thread)."""
+        if "_repo" in status:
+            self.repo = status.pop("_repo")
+        self.status = status
+        self._update_widgets()
+
+    def refresh_status(self) -> None:
+        """Read git status and update widgets (convenience for main-thread callers)."""
+        self.apply_status(self._read_status())
+
+    def _update_widgets(self) -> None:
+        """Push self.status into all child widgets (must run on main thread)."""
         name = self.repo_path.name
         try:
             branch_lbl = self.query_one(f"#branch-{name}", Static)
@@ -1463,9 +1479,11 @@ class GitDash(App):
                 except GitCommandError as e:
                     self._log_action_from_thread(f"[{name}] ERROR stash pop: {e}")
                     self._update_status_bar_from_thread(f"Synced {name} — stash pop had conflicts, resolve manually")
-                    self.call_from_thread(card.refresh_status)
+                    status = card._read_status()
+                    self.call_from_thread(card.apply_status, status)
                     return
-            self.call_from_thread(card.refresh_status)
+            status = card._read_status()
+            self.call_from_thread(card.apply_status, status)
             self._update_status_bar_from_thread(f"Synced {name}")
             self._log_action_from_thread(f"[{name}] sync complete")
         except GitCommandError as e:
@@ -1475,7 +1493,8 @@ class GitDash(App):
                     card.repo.git.stash("pop")
                 except GitCommandError:
                     pass
-            self.call_from_thread(card.refresh_status)
+            status = card._read_status()
+            self.call_from_thread(card.apply_status, status)
             self._update_status_bar_from_thread(f"Sync failed: {e}")
 
     @work(thread=True)
@@ -1485,7 +1504,8 @@ class GitDash(App):
         self._log_action_from_thread(f"[{name}] git fetch --all --prune")
         try:
             card.repo.git.fetch("--all", "--prune")
-            self.call_from_thread(card.refresh_status)
+            status = card._read_status()
+            self.call_from_thread(card.apply_status, status)
             self._update_status_bar_from_thread(f"Fetched {name}")
             self._log_action_from_thread(f"[{name}] fetch OK")
         except GitCommandError as e:
@@ -1808,17 +1828,29 @@ class GitDash(App):
 
     @work(thread=True, exclusive=True, group="auto-refresh")
     def _auto_refresh(self) -> None:
-        """Silently refresh all repo statuses on a timer."""
+        """Silently fetch and refresh all repo statuses on a timer."""
         cards = self.call_from_thread(self._get_cards)
         for card in cards:
-            self.call_from_thread(card.refresh_status)
+            try:
+                card.repo.git.fetch("--all", "--prune")
+            except GitCommandError:
+                pass
+            status = card._read_status()
+            self.call_from_thread(card.apply_status, status)
 
     @work(thread=True, exclusive=True, group="manual-refresh")
     def action_refresh_all(self) -> None:
         self._update_status_bar_from_thread("Refreshing all...")
         cards = self.call_from_thread(self._get_cards)
-        for card in cards:
-            self.call_from_thread(card.refresh_status)
+        total = len(cards)
+        for index, card in enumerate(cards, start=1):
+            self._update_status_bar_from_thread(f"Refreshing {card.repo_path.name} ({index}/{total})...")
+            try:
+                card.repo.git.fetch("--all", "--prune")
+            except GitCommandError:
+                pass
+            status = card._read_status()
+            self.call_from_thread(card.apply_status, status)
         self._update_status_bar_from_thread("Refreshed")
 
     @work(thread=True)
@@ -1832,7 +1864,8 @@ class GitDash(App):
                 self._update_status_bar_from_thread(f"Fetching {card.repo_path.name} ({index}/{total})...")
                 self._log_action_from_thread(f"[{card.repo_path.name}] git fetch --all --prune")
                 card.repo.git.fetch("--all", "--prune")
-                self.call_from_thread(card.refresh_status)
+                status = card._read_status()
+                self.call_from_thread(card.apply_status, status)
                 self._log_action_from_thread(f"[{card.repo_path.name}] fetch OK")
             except GitCommandError as e:
                 self._log_action_from_thread(f"[{card.repo_path.name}] ERROR fetch: {e}")
@@ -1852,7 +1885,8 @@ class GitDash(App):
                 self._update_status_bar_from_thread(f"Fetching {card.repo_path.name} ({index}/{total})...")
                 self._log_action_from_thread(f"[{card.repo_path.name}] git fetch --all --prune")
                 card.repo.git.fetch("--all", "--prune")
-                self.call_from_thread(card.refresh_status)
+                status = card._read_status()
+                self.call_from_thread(card.apply_status, status)
                 successes += 1
                 self._log_action_from_thread(f"[{card.repo_path.name}] fetch OK")
             except GitCommandError as e:
@@ -1882,7 +1916,8 @@ class GitDash(App):
                 self._update_status_bar_from_thread(f"Pulling {card.repo_path.name} ({index}/{total})...")
                 self._log_action_from_thread(f"[{card.repo_path.name}] git pull")
                 card.repo.git.pull()
-                self.call_from_thread(card.refresh_status)
+                status = card._read_status()
+                self.call_from_thread(card.apply_status, status)
                 successes += 1
                 self._log_action_from_thread(f"[{card.repo_path.name}] pull OK")
             except GitCommandError as e:
