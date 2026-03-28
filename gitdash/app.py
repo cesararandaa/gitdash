@@ -77,17 +77,16 @@ def short_status(repo: Repo) -> dict:
         tb = repo.active_branch.tracking_branch()
         if tb:
             tracking = tb.name
-            commits_behind = list(repo.iter_commits(f"{branch}..{tb.name}"))
-            commits_ahead = list(repo.iter_commits(f"{tb.name}..{branch}"))
-            ahead = len(commits_ahead)
-            behind = len(commits_behind)
+            ahead = int(repo.git.rev_list("--count", f"{tb.name}..{branch}"))
+            behind = int(repo.git.rev_list("--count", f"{branch}..{tb.name}"))
     except (ValueError, GitCommandError):
         pass
 
     staged = [d.a_path for d in repo.index.diff("HEAD")] if repo.head.is_valid() else []
     unstaged = [d.a_path for d in repo.index.diff(None)]
     untracked = repo.untracked_files
-    stashes = len(list(repo.git.stash("list").splitlines())) if repo.git.stash("list") else 0
+    stash_output = repo.git.stash("list")
+    stashes = len(stash_output.splitlines()) if stash_output else 0
     conflicted = bool(repo.index.unmerged_blobs())
 
     return {
@@ -913,10 +912,7 @@ class RepoCard(Vertical, can_focus=True):
     def _read_status(self) -> dict:
         """Read git status from disk (safe to call from any thread)."""
         try:
-            repo = Repo(self.repo_path)
-            status = short_status(repo)
-            status["_repo"] = repo
-            return status
+            return short_status(self.repo)
         except (InvalidGitRepositoryError, Exception):
             return {"branch": "?", "tracking": None, "ahead": 0, "behind": 0,
                     "staged": [], "unstaged": [], "untracked": [], "stashes": 0,
@@ -924,8 +920,6 @@ class RepoCard(Vertical, can_focus=True):
 
     def apply_status(self, status: dict) -> None:
         """Update widgets from a pre-computed status dict (must run on main thread)."""
-        if "_repo" in status:
-            self.repo = status.pop("_repo")
         self.status = status
         self._update_widgets()
 
@@ -1404,6 +1398,11 @@ class GitDash(App):
     def _log_action_from_thread(self, msg: str) -> None:
         self.call_from_thread(self._log_action, msg)
 
+    def _refresh_card_from_thread(self, card: RepoCard) -> None:
+        """Read status off-thread and apply on main thread."""
+        status = card._read_status()
+        self.call_from_thread(card.apply_status, status)
+
     def _show_message(self, title: str, content: str) -> None:
         self.push_screen(MessageModal(title, content))
 
@@ -1479,11 +1478,9 @@ class GitDash(App):
                 except GitCommandError as e:
                     self._log_action_from_thread(f"[{name}] ERROR stash pop: {e}")
                     self._update_status_bar_from_thread(f"Synced {name} — stash pop had conflicts, resolve manually")
-                    status = card._read_status()
-                    self.call_from_thread(card.apply_status, status)
+                    self._refresh_card_from_thread(card)
                     return
-            status = card._read_status()
-            self.call_from_thread(card.apply_status, status)
+            self._refresh_card_from_thread(card)
             self._update_status_bar_from_thread(f"Synced {name}")
             self._log_action_from_thread(f"[{name}] sync complete")
         except GitCommandError as e:
@@ -1493,8 +1490,7 @@ class GitDash(App):
                     card.repo.git.stash("pop")
                 except GitCommandError:
                     pass
-            status = card._read_status()
-            self.call_from_thread(card.apply_status, status)
+            self._refresh_card_from_thread(card)
             self._update_status_bar_from_thread(f"Sync failed: {e}")
 
     @work(thread=True)
@@ -1504,8 +1500,7 @@ class GitDash(App):
         self._log_action_from_thread(f"[{name}] git fetch --all --prune")
         try:
             card.repo.git.fetch("--all", "--prune")
-            status = card._read_status()
-            self.call_from_thread(card.apply_status, status)
+            self._refresh_card_from_thread(card)
             self._update_status_bar_from_thread(f"Fetched {name}")
             self._log_action_from_thread(f"[{name}] fetch OK")
         except GitCommandError as e:
@@ -1515,7 +1510,8 @@ class GitDash(App):
     def _do_branch(self, card: RepoCard) -> None:
         local_branches = [h.name for h in card.repo.heads]
         remote_branches = []
-        for ref in card.repo.remotes.origin.refs if card.repo.remotes else []:
+        origin = getattr(card.repo.remotes, "origin", None) if card.repo.remotes else None
+        for ref in (origin.refs if origin else []):
             name = ref.name.replace("origin/", "", 1)
             if name != "HEAD" and name not in local_branches:
                 remote_branches.append(ref.name)
@@ -1626,20 +1622,10 @@ class GitDash(App):
             self._update_status_bar(f"Editor '{editor}' not found")
 
     def _do_open_editor(self, card: RepoCard, filepath: str | None = None) -> None:
-        editor = self._get_editor()
-        if not editor:
-            self._update_status_bar("No editor configured. Set 'editor' in config.toml or $EDITOR")
-            return
         if filepath:
-            target = str(Path(card.repo.working_dir) / filepath)
+            self._do_open_editor_path(str(Path(card.repo.working_dir) / filepath))
         else:
-            target = str(card.repo_path)
-        args = [editor, target]
-        try:
-            subprocess.Popen(args)
-            self._update_status_bar(f"Opened {filepath or card.repo_path.name} in {editor}")
-        except FileNotFoundError:
-            self._update_status_bar(f"Editor '{editor}' not found")
+            self._do_open_editor_path(str(card.repo_path))
 
     def _do_revert(self, card: RepoCard, single_file: tuple[str, str] | None = None) -> None:
         name = card.repo_path.name
@@ -1676,7 +1662,11 @@ class GitDash(App):
                     elif cat == "unstaged":
                         card.repo.git.checkout("--", filepath)
                     elif cat == "untracked":
-                        (Path(card.repo.working_dir) / filepath).unlink(missing_ok=True)
+                        p = Path(card.repo.working_dir) / filepath
+                        if p.is_dir():
+                            shutil.rmtree(p, ignore_errors=True)
+                        else:
+                            p.unlink(missing_ok=True)
                 else:
                     self._log_action(f"[{name}] revert all changes")
                     card.repo.git.checkout(".")
@@ -1835,8 +1825,7 @@ class GitDash(App):
                 card.repo.git.fetch("--all", "--prune")
             except GitCommandError:
                 pass
-            status = card._read_status()
-            self.call_from_thread(card.apply_status, status)
+            self._refresh_card_from_thread(card)
 
     @work(thread=True, exclusive=True, group="manual-refresh")
     def action_refresh_all(self) -> None:
@@ -1849,90 +1838,52 @@ class GitDash(App):
                 card.repo.git.fetch("--all", "--prune")
             except GitCommandError:
                 pass
-            status = card._read_status()
-            self.call_from_thread(card.apply_status, status)
+            self._refresh_card_from_thread(card)
         self._update_status_bar_from_thread("Refreshed")
+
+    def _bulk_git_op(self, verb: str, git_fn, show_summary: bool = True) -> None:
+        """Run a git operation across all repos from a worker thread."""
+        cards = self.call_from_thread(self._get_cards)
+        total = len(cards)
+        successes = 0
+        failures: list[str] = []
+        self._update_status_bar_from_thread(f"{verb.title()}ing all repos...")
+        self._log_action_from_thread(f"{verb} all started")
+        for index, card in enumerate(cards, start=1):
+            try:
+                self._update_status_bar_from_thread(f"{verb.title()}ing {card.repo_path.name} ({index}/{total})...")
+                git_fn(card)
+                self._refresh_card_from_thread(card)
+                successes += 1
+                self._log_action_from_thread(f"[{card.repo_path.name}] {verb} OK")
+            except GitCommandError as e:
+                failures.append(f"- `{card.repo_path.name}`: `{e}`")
+                self._log_action_from_thread(f"[{card.repo_path.name}] ERROR {verb}: {e}")
+        self._log_action_from_thread(f"{verb} all complete")
+        if show_summary:
+            self._update_status_bar_from_thread(f"{verb.title()} complete: {successes}/{total} repos")
+            if failures:
+                summary = "\n".join([
+                    f"{verb.title()}ed `{successes}` of `{total}` repos.",
+                    "",
+                    "Failures:",
+                    *failures,
+                ])
+                self.call_from_thread(self._show_message, f"{verb.title()} All Summary", summary)
+        else:
+            self._update_status_bar_from_thread("Ready")
 
     @work(thread=True)
     def _startup_fetch(self) -> None:
-        cards = self.call_from_thread(self._get_cards)
-        total = len(cards)
-        self._update_status_bar_from_thread("Fetching all repos...")
-        self._log_action_from_thread("startup fetch started")
-        for index, card in enumerate(cards, start=1):
-            try:
-                self._update_status_bar_from_thread(f"Fetching {card.repo_path.name} ({index}/{total})...")
-                self._log_action_from_thread(f"[{card.repo_path.name}] git fetch --all --prune")
-                card.repo.git.fetch("--all", "--prune")
-                status = card._read_status()
-                self.call_from_thread(card.apply_status, status)
-                self._log_action_from_thread(f"[{card.repo_path.name}] fetch OK")
-            except GitCommandError as e:
-                self._log_action_from_thread(f"[{card.repo_path.name}] ERROR fetch: {e}")
-        self._log_action_from_thread("startup fetch complete")
-        self._update_status_bar_from_thread("Ready")
+        self._bulk_git_op("fetch", lambda c: c.repo.git.fetch("--all", "--prune"), show_summary=False)
 
     @work(thread=True)
     def action_fetch_all(self) -> None:
-        cards = self.call_from_thread(self._get_cards)
-        total = len(cards)
-        successes = 0
-        failures: list[str] = []
-        self._update_status_bar_from_thread("Fetching all repos...")
-        self._log_action_from_thread("fetch all started")
-        for index, card in enumerate(cards, start=1):
-            try:
-                self._update_status_bar_from_thread(f"Fetching {card.repo_path.name} ({index}/{total})...")
-                self._log_action_from_thread(f"[{card.repo_path.name}] git fetch --all --prune")
-                card.repo.git.fetch("--all", "--prune")
-                status = card._read_status()
-                self.call_from_thread(card.apply_status, status)
-                successes += 1
-                self._log_action_from_thread(f"[{card.repo_path.name}] fetch OK")
-            except GitCommandError as e:
-                failures.append(f"- `{card.repo_path.name}`: `{e}`")
-                self._log_action_from_thread(f"[{card.repo_path.name}] ERROR fetch: {e}")
-        self._log_action_from_thread("fetch all complete")
-        self._update_status_bar_from_thread(f"Fetch complete: {successes}/{total} repos")
-        if failures:
-            summary = "\n".join([
-                f"Fetched `{successes}` of `{total}` repos.",
-                "",
-                "Failures:",
-                *failures,
-            ])
-            self.call_from_thread(self._show_message, "Fetch All Summary", summary)
+        self._bulk_git_op("fetch", lambda c: c.repo.git.fetch("--all", "--prune"))
 
     @work(thread=True)
     def action_pull_all(self) -> None:
-        cards = self.call_from_thread(self._get_cards)
-        total = len(cards)
-        successes = 0
-        failures: list[str] = []
-        self._update_status_bar_from_thread("Pulling all repos...")
-        self._log_action_from_thread("pull all started")
-        for index, card in enumerate(cards, start=1):
-            try:
-                self._update_status_bar_from_thread(f"Pulling {card.repo_path.name} ({index}/{total})...")
-                self._log_action_from_thread(f"[{card.repo_path.name}] git pull")
-                card.repo.git.pull()
-                status = card._read_status()
-                self.call_from_thread(card.apply_status, status)
-                successes += 1
-                self._log_action_from_thread(f"[{card.repo_path.name}] pull OK")
-            except GitCommandError as e:
-                failures.append(f"- `{card.repo_path.name}`: `{e}`")
-                self._log_action_from_thread(f"[{card.repo_path.name}] ERROR pull: {e}")
-        self._log_action_from_thread("pull all complete")
-        self._update_status_bar_from_thread(f"Pull complete: {successes}/{total} repos")
-        if failures:
-            summary = "\n".join([
-                f"Pulled `{successes}` of `{total}` repos.",
-                "",
-                "Failures:",
-                *failures,
-            ])
-            self.call_from_thread(self._show_message, "Pull All Summary", summary)
+        self._bulk_git_op("pull", lambda c: c.repo.git.pull())
 
     def action_search(self) -> None:
         cards = list(self.query(RepoCard))
