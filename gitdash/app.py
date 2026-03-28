@@ -6,6 +6,7 @@ import os
 import shutil
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
@@ -69,25 +70,77 @@ def style_diff(diff_text: str) -> Text:
 
 
 def short_status(repo: Repo) -> dict:
-    """Return a dict summarising the repo status."""
-    branch = repo.active_branch.name if not repo.head.is_detached else "DETACHED"
+    """Return a dict summarising the repo status.
+
+    Uses a single ``git status --porcelain=v2 --branch`` call plus one
+    ``git stash list`` instead of 6-7 separate git operations.
+    """
+    branch = "?"
     tracking = None
     ahead = behind = 0
-    try:
-        tb = repo.active_branch.tracking_branch()
-        if tb:
-            tracking = tb.name
-            ahead = int(repo.git.rev_list("--count", f"{tb.name}..{branch}"))
-            behind = int(repo.git.rev_list("--count", f"{branch}..{tb.name}"))
-    except (ValueError, GitCommandError):
-        pass
+    detached = False
+    staged: list[str] = []
+    unstaged: list[str] = []
+    untracked: list[str] = []
+    conflicted = False
 
-    staged = [d.a_path for d in repo.index.diff("HEAD")] if repo.head.is_valid() else []
-    unstaged = [d.a_path for d in repo.index.diff(None)]
-    untracked = repo.untracked_files
+    try:
+        raw = repo.git.status("--porcelain=v2", "--branch", "-uall")
+    except GitCommandError:
+        raw = ""
+
+    for line in raw.splitlines():
+        if line.startswith("# branch.head "):
+            head = line[len("# branch.head "):]
+            if head == "(detached)":
+                branch = "DETACHED"
+                detached = True
+            else:
+                branch = head
+        elif line.startswith("# branch.upstream "):
+            tracking = line[len("# branch.upstream "):]
+        elif line.startswith("# branch.ab "):
+            parts = line.split()
+            # format: # branch.ab +N -M
+            for p in parts:
+                if p.startswith("+"):
+                    try:
+                        ahead = int(p)
+                    except ValueError:
+                        pass
+                elif p.startswith("-"):
+                    try:
+                        behind = abs(int(p))
+                    except ValueError:
+                        pass
+        elif line.startswith("? "):
+            # Untracked file
+            untracked.append(line[2:])
+        elif line.startswith("u "):
+            # Unmerged (conflict) entry
+            conflicted = True
+            # Extract filename (last field)
+            parts = line.split("\t")
+            if parts:
+                unstaged.append(parts[-1])
+        elif line.startswith("1 ") or line.startswith("2 "):
+            # Changed entry: field index 1 has XY status
+            parts = line.split(" ", 8)
+            if len(parts) >= 9:
+                xy = parts[1]
+                # For rename entries (2), filename is after tab
+                if line.startswith("2 "):
+                    tab_parts = line.split("\t")
+                    fname = tab_parts[-1] if tab_parts else parts[-1]
+                else:
+                    fname = parts[8]
+                if xy[0] not in (".", "?"):
+                    staged.append(fname)
+                if xy[1] not in (".", "?"):
+                    unstaged.append(fname)
+
     stash_output = repo.git.stash("list")
     stashes = len(stash_output.splitlines()) if stash_output else 0
-    conflicted = bool(repo.index.unmerged_blobs())
 
     return {
         "branch": branch,
@@ -100,7 +153,7 @@ def short_status(repo: Repo) -> dict:
         "stashes": stashes,
         "conflicted": conflicted,
         "dirty": bool(staged or unstaged or untracked),
-        "detached": repo.head.is_detached,
+        "detached": detached,
     }
 
 
@@ -907,7 +960,13 @@ class RepoCard(Vertical, can_focus=True):
                 yield Button("\u00b1 Diff", id=f"diff-{self.repo_path.name}", classes="action-btn diff-btn")
 
     def on_mount(self) -> None:
-        self.refresh_status()
+        self._initial_refresh()
+
+    @work(thread=True)
+    def _initial_refresh(self) -> None:
+        """Load git status off the main thread on first mount."""
+        status = self._read_status()
+        self.app.call_from_thread(self.apply_status, status)
 
     def _read_status(self) -> dict:
         """Read git status from disk (safe to call from any thread)."""
@@ -1491,7 +1550,7 @@ class GitDash(App):
             cards[0].focus()
         if self.fetch_on_startup:
             self._startup_fetch()
-        self.set_interval(30, self._auto_refresh)
+        self.set_interval(60, self._auto_refresh)
 
     def _log_action(self, msg: str) -> None:
         """Write a timestamped entry to the git operations log."""
@@ -1631,7 +1690,9 @@ class GitDash(App):
             self._log_action_from_thread(f"[{name}] ERROR fetch: {e}")
             self._update_status_bar_from_thread(f"Fetch failed: {e}")
 
+    @work(thread=True)
     def _do_branch(self, card: RepoCard) -> None:
+        # Load branch refs off the main thread
         local_branches = [h.name for h in card.repo.heads]
         remote_branches = []
         origin = getattr(card.repo.remotes, "origin", None) if card.repo.remotes else None
@@ -1679,7 +1740,7 @@ class GitDash(App):
                     self._log_action(f"[{card.repo_path.name}] ERROR checkout: {e}")
                     self._update_status_bar(f"Checkout failed: {e}")
 
-        self.push_screen(BranchModal(branches, current), on_result)
+        self.call_from_thread(self.push_screen, BranchModal(branches, current), on_result)
 
     def _do_stash(self, card: RepoCard) -> None:
         name = card.repo_path.name
@@ -1944,45 +2005,77 @@ class GitDash(App):
     def _auto_refresh(self) -> None:
         """Silently fetch and refresh all repo statuses on a timer."""
         cards = self.call_from_thread(self._get_cards)
-        for card in cards:
+        max_workers = min(8, len(cards)) if cards else 1
+
+        def _fetch_one(card: RepoCard) -> RepoCard:
             try:
                 card.repo.git.fetch("--all", "--prune")
             except GitCommandError:
                 pass
-            self._refresh_card_from_thread(card)
+            return card
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_fetch_one, c): c for c in cards}
+            for future in as_completed(futures):
+                card = future.result()
+                self._refresh_card_from_thread(card)
 
     @work(thread=True, exclusive=True, group="manual-refresh")
     def action_refresh_all(self) -> None:
         self._update_status_bar_from_thread("Refreshing all...")
         cards = self.call_from_thread(self._get_cards)
         total = len(cards)
-        for index, card in enumerate(cards, start=1):
-            self._update_status_bar_from_thread(f"Refreshing {card.repo_path.name} ({index}/{total})...")
+        max_workers = min(8, total) if total else 1
+
+        def _refresh_one(card: RepoCard) -> RepoCard:
             try:
                 card.repo.git.fetch("--all", "--prune")
             except GitCommandError:
                 pass
-            self._refresh_card_from_thread(card)
+            return card
+
+        done = 0
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_refresh_one, c): c for c in cards}
+            for future in as_completed(futures):
+                card = future.result()
+                self._refresh_card_from_thread(card)
+                done += 1
+                self._update_status_bar_from_thread(f"Refreshing... ({done}/{total})")
         self._update_status_bar_from_thread("Refreshed")
 
     def _bulk_git_op(self, verb: str, git_fn, show_summary: bool = True) -> None:
-        """Run a git operation across all repos from a worker thread."""
+        """Run a git operation across all repos in parallel from a worker thread."""
         cards = self.call_from_thread(self._get_cards)
         total = len(cards)
         successes = 0
         failures: list[str] = []
         self._update_status_bar_from_thread(f"{verb.title()}ing all repos...")
         self._log_action_from_thread(f"{verb} all started")
-        for index, card in enumerate(cards, start=1):
+        max_workers = min(8, total) if total else 1
+
+        def _run_one(card: RepoCard) -> tuple[RepoCard, Exception | None]:
             try:
-                self._update_status_bar_from_thread(f"{verb.title()}ing {card.repo_path.name} ({index}/{total})...")
                 git_fn(card)
-                self._refresh_card_from_thread(card)
-                successes += 1
-                self._log_action_from_thread(f"[{card.repo_path.name}] {verb} OK")
+                return card, None
             except GitCommandError as e:
-                failures.append(f"- `{card.repo_path.name}`: `{e}`")
-                self._log_action_from_thread(f"[{card.repo_path.name}] ERROR {verb}: {e}")
+                return card, e
+
+        with ThreadPoolExecutor(max_workers=max_workers) as pool:
+            futures = {pool.submit(_run_one, c): c for c in cards}
+            done_count = 0
+            for future in as_completed(futures):
+                card, err = future.result()
+                done_count += 1
+                if err is None:
+                    self._refresh_card_from_thread(card)
+                    successes += 1
+                    self._log_action_from_thread(f"[{card.repo_path.name}] {verb} OK")
+                else:
+                    failures.append(f"- `{card.repo_path.name}`: `{err}`")
+                    self._log_action_from_thread(f"[{card.repo_path.name}] ERROR {verb}: {err}")
+                self._update_status_bar_from_thread(f"{verb.title()}ing... ({done_count}/{total})")
+
         self._log_action_from_thread(f"{verb} all complete")
         if show_summary:
             self._update_status_bar_from_thread(f"{verb.title()} complete: {successes}/{total} repos")
