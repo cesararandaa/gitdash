@@ -52,19 +52,19 @@ def style_diff(diff_text: str) -> Text:
         if i > 0:
             styled.append("\n")
         if line.startswith("diff --git") or line.startswith("---") or line.startswith("+++"):
-            styled.append(line, style="bold #cdd6f4")
+            styled.append(line, style="bold")
         elif line.startswith("@@"):
-            styled.append(line, style="bold #89b4fa")
+            styled.append(line, style="cyan bold")
         elif line.startswith("+"):
-            styled.append(line, style="#a6e3a1")
+            styled.append(line, style="green")
         elif line.startswith("-"):
-            styled.append(line, style="#f38ba8")
+            styled.append(line, style="red")
         elif line.startswith(("index ", "old mode", "new mode", "new file mode",
                               "deleted file mode", "similarity index", "rename",
                               "copy ", "commit ", "Author:", "Date:")):
-            styled.append(line, style="#6c7086")
+            styled.append(line, style="dim")
         else:
-            styled.append(line, style="#cdd6f4")
+            styled.append(line)
     return styled
 
 
@@ -234,10 +234,13 @@ class ShortcutBar(Vertical):
         yield Static(id="shortcut-global", classes="shortcut-line")
 
     def on_mount(self) -> None:
-        title_style = "bold #89b4fa"
-        key_style = "bold #f9e2af"
-        label_style = "#a6adc8"
-        sep_style = "#585b70"
+        colors = self.app.get_css_variables()
+        title_style = f"bold {colors.get('primary', '#0178D4')}"
+        key_style = f"bold {colors.get('accent', '#FEA62B')}"
+        label_style = colors.get("foreground", "#E0E0E0")
+        sep_color = colors.get("foreground-muted", "#808080")
+        # Strip alpha suffix — Rich doesn't support 8-digit hex colors
+        sep_style = sep_color[:7] if len(sep_color) == 9 and sep_color.startswith("#") else sep_color
 
         self.query_one("#shortcut-repo", Static).update(
             self._build_line("\u2502 Repo", self.REPO_ITEMS, title_style, key_style, label_style, sep_style),
@@ -930,6 +933,12 @@ class RepoCard(Vertical, can_focus=True):
         """Read git status and update widgets (convenience for main-thread callers)."""
         self.apply_status(self._read_status())
 
+    def _theme_color(self, var: str, fallback: str = "#808080") -> str:
+        """Get a theme color, stripping alpha suffix for Rich compatibility."""
+        colors = self.app.get_css_variables()
+        c = colors.get(var, fallback)
+        return c[:7] if len(c) == 9 and c.startswith("#") else c
+
     def _update_widgets(self) -> None:
         """Push self.status into all child widgets (must run on main thread)."""
         name = self.repo_path.name
@@ -978,13 +987,13 @@ class RepoCard(Vertical, can_focus=True):
                 flags.append("\u2714 CLEAN")
             flags_lbl.update(" ".join(flags))
             if self.status["conflicted"]:
-                flags_lbl.styles.color = "#f38ba8"
+                flags_lbl.styles.color = self._theme_color("error", "#f38ba8")
                 flags_lbl.styles.text_style = "bold"
             elif not total_changes and not sync_parts:
-                flags_lbl.styles.color = "#a6e3a1"
+                flags_lbl.styles.color = self._theme_color("success", "#a6e3a1")
                 flags_lbl.styles.text_style = "none"
             else:
-                flags_lbl.styles.color = "#89dceb"
+                flags_lbl.styles.color = self._theme_color("primary", "#89dceb")
                 flags_lbl.styles.text_style = "none"
         except NoMatches:
             pass
@@ -1012,9 +1021,9 @@ class RepoCard(Vertical, can_focus=True):
                 else:
                     label = f"\u2191 Push  \u2191{ahead}"
                 sync_bar.update(label)
-                color = "#89b4fa" if behind else "#a6e3a1"
+                color = self._theme_color("primary", "#89b4fa") if behind else self._theme_color("success", "#a6e3a1")
                 sync_bar.styles.background = color
-                sync_bar.styles.color = "#1e1e2e"
+                sync_bar.styles.color = self._theme_color("background", "#1e1e2e")
                 sync_bar.styles.text_align = "center"
                 sync_bar.styles.text_style = "bold"
                 sync_bar.styles.padding = (0, 1)
@@ -1149,7 +1158,7 @@ class GitDash(App):
     }
 
     .repo-card.clean-card {
-        border: solid #585b70;
+        border: solid $primary-background;
     }
 
     .repo-card.clean-card:focus {
@@ -1157,7 +1166,7 @@ class GitDash(App):
     }
 
     .repo-card.dirty-card {
-        border: solid #fab387;
+        border: solid $warning;
     }
 
     .repo-card.dirty-card:focus {
@@ -1165,11 +1174,11 @@ class GitDash(App):
     }
 
     .repo-card.conflict-card {
-        border: solid #f38ba8;
+        border: solid $error;
     }
 
     .repo-card.conflict-card:focus {
-        border: solid #f38ba8;
+        border: solid $error;
     }
 
     .repo-header {
@@ -1186,7 +1195,7 @@ class GitDash(App):
         margin: 0 1 0 0;
         border: none;
         background: transparent;
-        color: #6c7086;
+        color: $text-muted;
     }
 
     .toggle-btn:hover {
@@ -1201,27 +1210,26 @@ class GitDash(App):
     }
 
     .repo-branch {
-        color: #a6e3a1;
+        color: $success;
         width: auto;
         margin-left: 1;
         text-style: bold;
     }
 
     .repo-changes {
-        color: #fab387;
+        color: $warning;
         width: auto;
         margin-left: 1;
     }
 
     .repo-sync {
-        color: #f9e2af;
+        color: $accent;
         width: auto;
         margin-left: 1;
         text-style: bold;
     }
 
     .repo-flags {
-        color: #89dceb;
         width: auto;
         margin-left: 1;
     }
@@ -1253,60 +1261,60 @@ class GitDash(App):
         height: 1;
         margin: 0 1 0 0;
         border: none;
-        background: #313244;
-        color: #cdd6f4;
+        background: $panel;
+        color: $text;
     }
 
     .action-btn:hover {
-        background: #45475a;
-        color: #cdd6f4;
+        background: $boost;
+        color: $text;
     }
 
     .action-btn.accent {
-        background: #a6e3a1;
-        color: #1e1e2e;
+        background: $success;
+        color: $panel;
         text-style: bold;
     }
 
     .action-btn.accent:hover {
-        background: #94e2d5;
-        color: #1e1e2e;
+        background: $success;
+        color: $panel;
     }
 
     .action-btn.fetch-btn {
-        background: #313244;
-        color: #89b4fa;
+        background: $panel;
+        color: $primary;
     }
 
     .action-btn.fetch-btn:hover {
-        background: #45475a;
+        background: $boost;
     }
 
     .action-btn.branch-btn {
-        background: #313244;
-        color: #a6e3a1;
+        background: $panel;
+        color: $success;
     }
 
     .action-btn.branch-btn:hover {
-        background: #45475a;
+        background: $boost;
     }
 
     .action-btn.stash-btn {
-        background: #313244;
-        color: #f9e2af;
+        background: $panel;
+        color: $warning;
     }
 
     .action-btn.stash-btn:hover {
-        background: #45475a;
+        background: $boost;
     }
 
     .action-btn.diff-btn {
-        background: #313244;
-        color: #cba6f7;
+        background: $panel;
+        color: $accent;
     }
 
     .action-btn.diff-btn:hover {
-        background: #45475a;
+        background: $boost;
     }
 
     .sync-btn {
@@ -1343,14 +1351,14 @@ class GitDash(App):
     #filediff-list, #log-list, #stage-list {
         height: auto;
         max-height: 12;
-        border: solid #45475a;
+        border: solid $primary-background;
         margin: 1 0;
     }
 
     #search-results {
         height: auto;
         max-height: 12;
-        border: solid #45475a;
+        border: solid $primary-background;
         margin: 1 0;
     }
 
@@ -1370,11 +1378,11 @@ class GitDash(App):
         margin-bottom: 1;
         width: 100%;
         text-align: center;
-        color: #cdd6f4;
+        color: $text;
     }
 
     #confirm-details {
-        color: #a6adc8;
+        color: $text-muted;
         margin-bottom: 1;
         width: 100%;
         padding: 0 1;
@@ -1388,13 +1396,13 @@ class GitDash(App):
 
     #diff-log {
         height: 1fr;
-        border: solid #45475a;
+        border: solid $primary-background;
         margin: 1 0;
     }
 
     #md-viewer {
         height: 1fr;
-        border: solid #45475a;
+        border: solid $primary-background;
         margin: 1 0;
         overflow-y: auto;
     }
@@ -1402,14 +1410,14 @@ class GitDash(App):
     #branch-list {
         height: auto;
         max-height: 20;
-        border: solid #45475a;
+        border: solid $primary-background;
         margin: 1 0;
     }
 
     #stash-lv {
         height: auto;
         max-height: 12;
-        border: solid #45475a;
+        border: solid $primary-background;
         margin: 1 0;
     }
 
@@ -1419,9 +1427,9 @@ class GitDash(App):
         dock: bottom;
         height: 12;
         display: none;
-        border-top: solid #585b70;
+        border-top: solid $primary;
         margin: 0 1;
-        background: #181825;
+        background: $surface;
     }
 
     #status-bar {
@@ -1429,7 +1437,7 @@ class GitDash(App):
         height: 1;
         padding: 0 1;
         background: $primary-background;
-        color: #a6adc8;
+        color: $text-muted;
     }
 
     #shortcut-bar {
