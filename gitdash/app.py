@@ -52,19 +52,19 @@ def style_diff(diff_text: str) -> Text:
         if i > 0:
             styled.append("\n")
         if line.startswith("diff --git") or line.startswith("---") or line.startswith("+++"):
-            styled.append(line, style="bold")
+            styled.append(line, style="bold #cdd6f4")
         elif line.startswith("@@"):
-            styled.append(line, style="cyan bold")
+            styled.append(line, style="bold #89b4fa")
         elif line.startswith("+"):
-            styled.append(line, style="green")
+            styled.append(line, style="#a6e3a1")
         elif line.startswith("-"):
-            styled.append(line, style="red")
+            styled.append(line, style="#f38ba8")
         elif line.startswith(("index ", "old mode", "new mode", "new file mode",
                               "deleted file mode", "similarity index", "rename",
                               "copy ", "commit ", "Author:", "Date:")):
-            styled.append(line, style="dim")
+            styled.append(line, style="#6c7086")
         else:
-            styled.append(line)
+            styled.append(line, style="#cdd6f4")
     return styled
 
 
@@ -155,11 +155,11 @@ class CommitModal(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="commit-dialog"):
-            yield Label("Commit Message", id="commit-title")
+            yield Label("\u270e Commit Message", id="commit-title")
             yield Input(placeholder="Enter commit message...", id="commit-input")
             with Horizontal(id="commit-buttons"):
-                yield Button("Commit", variant="success", id="btn-commit")
-                yield Button("Cancel", variant="error", id="btn-cancel")
+                yield Button("\u2713 Commit", variant="success", id="btn-commit")
+                yield Button("\u2717 Cancel", variant="error", id="btn-cancel")
 
     def on_mount(self) -> None:
         self.query_one("#commit-input", Input).focus()
@@ -216,7 +216,7 @@ class ShortcutBar(Vertical):
         ("x", "discard"),
     ]
     GLOBAL_ITEMS: list[tuple[str, str]] = [
-        ("space", "toggle"),
+        ("\u2423", "toggle"),
         ("j/k", "move"),
         ("J/K", "reorder"),
         ("/", "search"),
@@ -234,19 +234,16 @@ class ShortcutBar(Vertical):
         yield Static(id="shortcut-global", classes="shortcut-line")
 
     def on_mount(self) -> None:
-        colors = self.app.get_css_variables()
-        title_style = f"bold {colors.get('primary', '#0178D4')}"
-        key_style = f"bold {colors.get('accent', '#FEA62B')}"
-        label_style = colors.get("foreground", "#E0E0E0")
-        sep_color = colors.get("foreground-muted", "#808080")
-        # Strip alpha suffix — Rich doesn't support 8-digit hex colors
-        sep_style = sep_color[:7] if len(sep_color) == 9 and sep_color.startswith("#") else sep_color
+        title_style = "bold #89b4fa"
+        key_style = "bold #f9e2af"
+        label_style = "#a6adc8"
+        sep_style = "#585b70"
 
         self.query_one("#shortcut-repo", Static).update(
-            self._build_line("Repo", self.REPO_ITEMS, title_style, key_style, label_style, sep_style),
+            self._build_line("\u2502 Repo", self.REPO_ITEMS, title_style, key_style, label_style, sep_style),
         )
         self.query_one("#shortcut-global", Static).update(
-            self._build_line("Global", self.GLOBAL_ITEMS, title_style, key_style, label_style, sep_style),
+            self._build_line("\u2502 Global", self.GLOBAL_ITEMS, title_style, key_style, label_style, sep_style),
         )
 
     @staticmethod
@@ -281,13 +278,13 @@ class BranchModal(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="branch-dialog"):
-            yield Label("Switch Branch", id="branch-title")
+            yield Label("\u2387 Switch Branch", id="branch-title")
             yield Input(placeholder="Filter or new branch name...", id="branch-filter")
             yield ListView(id="branch-list")
             with Horizontal(id="branch-buttons"):
-                yield Button("Switch", variant="success", id="btn-switch")
-                yield Button("Create & Switch", variant="primary", id="btn-create")
-                yield Button("Cancel", variant="error", id="btn-cancel")
+                yield Button("\u21c4 Switch", variant="success", id="btn-switch")
+                yield Button("+ Create & Switch", variant="primary", id="btn-create")
+                yield Button("\u2717 Cancel", variant="error", id="btn-cancel")
 
     def on_mount(self) -> None:
         self._populate_list("")
@@ -338,14 +335,14 @@ class StashModal(ModalScreen[str | None]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="branch-dialog"):
-            yield Label("Stash Manager", id="branch-title")
+            yield Label("\u2261 Stash Manager", id="branch-title")
             yield ListView(id="stash-lv")
             with Horizontal(id="branch-buttons"):
                 if self.has_changes:
-                    yield Button("Stash", variant="success", id="btn-stash-push")
-                yield Button("Pop", variant="primary", id="btn-stash-pop")
-                yield Button("Apply", variant="primary", id="btn-stash-apply")
-                yield Button("Drop", variant="error", id="btn-stash-drop")
+                    yield Button("\u2913 Stash", variant="success", id="btn-stash-push")
+                yield Button("\u2912 Pop", variant="primary", id="btn-stash-pop")
+                yield Button("\u21b3 Apply", variant="primary", id="btn-stash-apply")
+                yield Button("\u2717 Drop", variant="error", id="btn-stash-drop")
                 yield Button("Cancel", variant="default", id="btn-cancel")
 
     def on_mount(self) -> None:
@@ -435,7 +432,7 @@ class LogModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="filediff-dialog"):
-            yield Label(self.title_text, id="diff-title")
+            yield Label(f"\u2630 {self.title_text}", id="diff-title")
             yield ListView(id="log-list")
             yield RichLog(id="diff-log", wrap=True, markup=False)
             yield Button("Close", variant="primary", id="btn-close")
@@ -449,7 +446,7 @@ class LogModal(ModalScreen):
             idx = self._next_id
             self._next_id += 1
             self._commit_map[idx] = commit.hexsha
-            lv.append(ListItem(Label(f"{short_sha}  {date}  {msg}"), id=f"lg-{idx}"))
+            lv.append(ListItem(Label(f"\u2022 {short_sha}  {date}  {msg}"), id=f"lg-{idx}"))
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is None or not event.item.id or not event.item.id.startswith("lg-"):
@@ -489,11 +486,11 @@ class StageModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="filediff-dialog"):
-            yield Label("Stage / Unstage Files", id="diff-title")
+            yield Label("\u2713 Stage / Unstage Files", id="diff-title")
             yield ListView(id="stage-list")
             with Horizontal(id="filediff-buttons"):
-                yield Button("Stage All", variant="success", id="btn-stage-all")
-                yield Button("Unstage All", variant="warning", id="btn-unstage-all")
+                yield Button("\u2713 Stage All", variant="success", id="btn-stage-all")
+                yield Button("\u2717 Unstage All", variant="warning", id="btn-unstage-all")
                 yield Button("Close", variant="primary", id="btn-close")
 
     def on_mount(self) -> None:
@@ -509,22 +506,22 @@ class StageModal(ModalScreen):
         untracked = self.repo.untracked_files
 
         if staged:
-            lv.append(ListItem(Label("── Staged (will be committed) ──")))
+            lv.append(ListItem(Label("\u2500\u2500 \u2713 Staged (will be committed) \u2500\u2500")))
             for f in staged:
                 idx = self._next_id; self._next_id += 1
-                lv.append(ListItem(Label(f"  [x] {f}"), id=f"sf-{idx}"))
+                lv.append(ListItem(Label(f"  \u25c9 {f}"), id=f"sf-{idx}"))
                 self._file_map[idx] = (f, "staged")
         if unstaged:
-            lv.append(ListItem(Label("── Modified (not staged) ──")))
+            lv.append(ListItem(Label("\u2500\u2500 \u270e Modified (not staged) \u2500\u2500")))
             for f in unstaged:
                 idx = self._next_id; self._next_id += 1
-                lv.append(ListItem(Label(f"  [ ] {f}"), id=f"sf-{idx}"))
+                lv.append(ListItem(Label(f"  \u25cb {f}"), id=f"sf-{idx}"))
                 self._file_map[idx] = (f, "unstaged")
         if untracked:
-            lv.append(ListItem(Label("── Untracked ──")))
+            lv.append(ListItem(Label("\u2500\u2500 + Untracked \u2500\u2500")))
             for f in untracked:
                 idx = self._next_id; self._next_id += 1
-                lv.append(ListItem(Label(f"  [ ] {f}"), id=f"sf-{idx}"))
+                lv.append(ListItem(Label(f"  \u25cb {f}"), id=f"sf-{idx}"))
                 self._file_map[idx] = (f, "untracked")
         if not staged and not unstaged and not untracked:
             lv.append(ListItem(Label("  (no changes)")))
@@ -591,7 +588,7 @@ class SearchModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="filediff-dialog"):
-            yield Label("Search Across Repos", id="diff-title")
+            yield Label("\u2315 Search Across Repos", id="diff-title")
             yield Input(placeholder="Type to search...", id="search-input")
             yield ListView(id="search-results")
             yield RichLog(id="diff-log", wrap=True, markup=False)
@@ -735,13 +732,13 @@ class FileDiffModal(ModalScreen):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="filediff-dialog"):
-            yield Label(self.title_text, id="diff-title")
+            yield Label(f"\u00b1 {self.title_text}", id="diff-title")
             yield Input(placeholder="Filter files...", id="filediff-filter")
             yield ListView(id="filediff-list")
             yield RichLog(id="diff-log", wrap=True, markup=False)
             with Horizontal(id="filediff-buttons"):
-                yield Button("Open in Editor", variant="success", id="btn-edit-file")
-                yield Button("Revert File", variant="error", id="btn-revert-file")
+                yield Button("\u270e Open in Editor", variant="success", id="btn-edit-file")
+                yield Button("\u2717 Revert File", variant="error", id="btn-revert-file")
                 yield Button("Close", variant="primary", id="btn-close")
 
     def on_mount(self) -> None:
@@ -759,8 +756,8 @@ class FileDiffModal(ModalScreen):
                 continue
             if cat != current_cat:
                 current_cat = cat
-                label_text = {"staged": "Staged", "unstaged": "Modified", "untracked": "Untracked"}.get(cat, cat)
-                lv.append(ListItem(Label(f"── {label_text} ──")))
+                label_text = {"staged": "\u2713 Staged", "unstaged": "\u270e Modified", "untracked": "+ Untracked"}.get(cat, cat)
+                lv.append(ListItem(Label(f"\u2500\u2500 {label_text} \u2500\u2500")))
             idx = self._next_id
             self._next_id += 1
             lv.append(ListItem(Label(f"  {filepath}"), id=f"fd-{idx}"))
@@ -891,7 +888,7 @@ class RepoCard(Vertical, can_focus=True):
 
     def compose(self) -> ComposeResult:
         with Horizontal(classes="repo-header"):
-            yield Button("v", id=f"toggle-{self.repo_path.name}", classes="toggle-btn")
+            yield Button("\u25bc", id=f"toggle-{self.repo_path.name}", classes="toggle-btn")
             yield Static(self.repo_path.name, classes="repo-name")
             yield Static("", id=f"branch-{self.repo_path.name}", classes="repo-branch")
             yield Static("", id=f"changes-{self.repo_path.name}", classes="repo-changes")
@@ -901,11 +898,11 @@ class RepoCard(Vertical, can_focus=True):
         with Vertical(id=f"body-{self.repo_path.name}", classes="repo-body"):
             yield Tree("Changes", id=f"tree-{self.repo_path.name}")
             with Horizontal(classes="repo-actions"):
-                yield Button("Fetch", id=f"fetch-{self.repo_path.name}", classes="action-btn")
-                yield Button("Branch", id=f"brn-{self.repo_path.name}", classes="action-btn")
-                yield Button("Stash", id=f"stash-{self.repo_path.name}", classes="action-btn")
-                yield Button("Commit", id=f"cmt-{self.repo_path.name}", classes="action-btn accent")
-                yield Button("Diff", id=f"diff-{self.repo_path.name}", classes="action-btn")
+                yield Button("\u21bb Fetch", id=f"fetch-{self.repo_path.name}", classes="action-btn fetch-btn")
+                yield Button("\u2387 Branch", id=f"brn-{self.repo_path.name}", classes="action-btn branch-btn")
+                yield Button("\u2261 Stash", id=f"stash-{self.repo_path.name}", classes="action-btn stash-btn")
+                yield Button("\u2713 Commit", id=f"cmt-{self.repo_path.name}", classes="action-btn accent")
+                yield Button("\u00b1 Diff", id=f"diff-{self.repo_path.name}", classes="action-btn diff-btn")
 
     def on_mount(self) -> None:
         self.refresh_status()
@@ -938,7 +935,7 @@ class RepoCard(Vertical, can_focus=True):
         name = self.repo_path.name
         try:
             branch_lbl = self.query_one(f"#branch-{name}", Static)
-            branch_lbl.update(f" {self.status['branch']}")
+            branch_lbl.update(f"\u2387 {self.status['branch']}")
         except NoMatches:
             pass
 
@@ -950,20 +947,20 @@ class RepoCard(Vertical, can_focus=True):
             changes_lbl = self.query_one(f"#changes-{name}", Static)
             change_parts = []
             if staged_count:
-                change_parts.append(f"staged:{staged_count}")
+                change_parts.append(f"\u2713{staged_count}")
             if unstaged_count:
-                change_parts.append(f"mod:{unstaged_count}")
+                change_parts.append(f"\u270e{unstaged_count}")
             if untracked_count:
-                change_parts.append(f"new:{untracked_count}")
+                change_parts.append(f"+{untracked_count}")
             changes_lbl.update(" ".join(change_parts))
         except NoMatches:
             pass
 
         sync_parts = []
         if self.status["ahead"] or self.status["behind"]:
-            sync_parts.append(f"↑{self.status['ahead']}↓{self.status['behind']}")
+            sync_parts.append(f"\u2191{self.status['ahead']}\u2193{self.status['behind']}")
         if self.status["stashes"]:
-            sync_parts.append(f"stash:{self.status['stashes']}")
+            sync_parts.append(f"\u2261{self.status['stashes']}")
         try:
             sync_lbl = self.query_one(f"#sync-{name}", Static)
             sync_lbl.update(" ".join(sync_parts))
@@ -974,18 +971,34 @@ class RepoCard(Vertical, can_focus=True):
             flags_lbl = self.query_one(f"#flags-{name}", Static)
             flags = []
             if self.status["conflicted"]:
-                flags.append("CONFLICT")
+                flags.append("\u26a0 CONFLICT")
             if not self.status["detached"] and not self.status["tracking"]:
-                flags.append("NO-UPSTREAM")
+                flags.append("\u2bee NO-UPSTREAM")
             if not total_changes and not sync_parts and not flags:
-                flags.append("CLEAN")
+                flags.append("\u2714 CLEAN")
             flags_lbl.update(" ".join(flags))
-            flags_lbl.styles.color = "#f38ba8" if self.status["conflicted"] else "#89dceb"
-            flags_lbl.styles.text_style = "bold" if self.status["conflicted"] else "none"
+            if self.status["conflicted"]:
+                flags_lbl.styles.color = "#f38ba8"
+                flags_lbl.styles.text_style = "bold"
+            elif not total_changes and not sync_parts:
+                flags_lbl.styles.color = "#a6e3a1"
+                flags_lbl.styles.text_style = "none"
+            else:
+                flags_lbl.styles.color = "#89dceb"
+                flags_lbl.styles.text_style = "none"
         except NoMatches:
             pass
 
-        # Update sync bar using inline styles (CSS classes have rendering bugs)
+        # Dynamic card border class based on state
+        self.remove_class("clean-card", "dirty-card", "conflict-card")
+        if self.status["conflicted"]:
+            self.add_class("conflict-card")
+        elif total_changes:
+            self.add_class("dirty-card")
+        else:
+            self.add_class("clean-card")
+
+        # Update sync bar using inline styles
         ahead = self.status["ahead"]
         behind = self.status["behind"]
         has_local = bool(self.status["staged"] or self.status["unstaged"] or self.status["untracked"])
@@ -993,22 +1006,24 @@ class RepoCard(Vertical, can_focus=True):
             sync_bar = self.query_one(f"#syncbtn-{name}", Static)
             if behind or ahead:
                 if behind and ahead:
-                    label = f"Stash, Pull & Push  ↑{ahead} ↓{behind}" if has_local else f"Sync Changes  ↑{ahead} ↓{behind}"
+                    label = f"\u2261 Stash, Pull & Push  \u2191{ahead} \u2193{behind}" if has_local else f"\u21c5 Sync  \u2191{ahead} \u2193{behind}"
                 elif behind:
-                    label = f"Stash & Pull  ↓{behind}" if has_local else f"Pull Changes  ↓{behind}"
+                    label = f"\u2261 Stash & Pull  \u2193{behind}" if has_local else f"\u2193 Pull  \u2193{behind}"
                 else:
-                    label = f"Push Changes  ↑{ahead}"
+                    label = f"\u2191 Push  \u2191{ahead}"
                 sync_bar.update(label)
-                color = "#1177bb" if behind else "#388e3c"
+                color = "#89b4fa" if behind else "#a6e3a1"
                 sync_bar.styles.background = color
-                sync_bar.styles.color = "white"
+                sync_bar.styles.color = "#1e1e2e"
                 sync_bar.styles.text_align = "center"
                 sync_bar.styles.text_style = "bold"
                 sync_bar.styles.padding = (0, 1)
+                sync_bar.display = True
             else:
                 sync_bar.update("")
                 sync_bar.styles.background = None
                 sync_bar.styles.padding = (0, 0)
+                sync_bar.display = False
         except NoMatches:
             pass
 
@@ -1016,17 +1031,17 @@ class RepoCard(Vertical, can_focus=True):
             tree: Tree = self.query_one(f"#tree-{name}", Tree)
             tree.clear()
             total = len(self.status["staged"]) + len(self.status["unstaged"]) + len(self.status["untracked"])
-            tree.root.set_label(f"Changes ({total})")
+            tree.root.set_label(f"\u2500 Changes ({total})")
             if self.status["staged"]:
-                staged_node = tree.root.add("Staged", expand=True)
+                staged_node = tree.root.add("\u2713 Staged", expand=True)
                 for f in self.status["staged"]:
                     staged_node.add_leaf(f"  {f}")
             if self.status["unstaged"]:
-                mod_node = tree.root.add("Modified", expand=True)
+                mod_node = tree.root.add("\u270e Modified", expand=True)
                 for f in self.status["unstaged"]:
                     mod_node.add_leaf(f"  {f}")
             if self.status["untracked"]:
-                unt_node = tree.root.add("Untracked", expand=True)
+                unt_node = tree.root.add("+ Untracked", expand=True)
                 for f in self.status["untracked"]:
                     unt_node.add_leaf(f"  {f}")
             tree.root.expand()
@@ -1039,7 +1054,7 @@ class RepoCard(Vertical, can_focus=True):
             body = self.query_one(f"#body-{name}")
             body.display = not value
             btn = self.query_one(f"#toggle-{name}", Button)
-            btn.label = ">" if value else "v"
+            btn.label = "\u25b6" if value else "\u25bc"
         except NoMatches:
             pass
 
@@ -1120,11 +1135,12 @@ class GitDash(App):
         scrollbar-size: 1 1;
     }
 
+    /* ── Repo Cards ────────────────────────────────────── */
+
     .repo-card {
         margin: 0 1;
         padding: 0;
         border: solid $primary-background;
-        margin-bottom: 1;
         height: auto;
     }
 
@@ -1132,8 +1148,32 @@ class GitDash(App):
         border: solid $accent;
     }
 
+    .repo-card.clean-card {
+        border: solid #585b70;
+    }
+
+    .repo-card.clean-card:focus {
+        border: solid $accent;
+    }
+
+    .repo-card.dirty-card {
+        border: solid #fab387;
+    }
+
+    .repo-card.dirty-card:focus {
+        border: solid $accent;
+    }
+
+    .repo-card.conflict-card {
+        border: solid #f38ba8;
+    }
+
+    .repo-card.conflict-card:focus {
+        border: solid #f38ba8;
+    }
+
     .repo-header {
-        height: 3;
+        height: 1;
         padding: 0 1;
         background: $primary-background;
         align: left middle;
@@ -1146,6 +1186,10 @@ class GitDash(App):
         margin: 0 1 0 0;
         border: none;
         background: transparent;
+        color: #6c7086;
+    }
+
+    .toggle-btn:hover {
         color: $text;
     }
 
@@ -1160,6 +1204,7 @@ class GitDash(App):
         color: #a6e3a1;
         width: auto;
         margin-left: 1;
+        text-style: bold;
     }
 
     .repo-changes {
@@ -1172,6 +1217,7 @@ class GitDash(App):
         color: #f9e2af;
         width: auto;
         margin-left: 1;
+        text-style: bold;
     }
 
     .repo-flags {
@@ -1179,6 +1225,8 @@ class GitDash(App):
         width: auto;
         margin-left: 1;
     }
+
+    /* ── Card Body & Tree ─────────────────────────────── */
 
     .repo-body {
         padding: 0 1;
@@ -1191,24 +1239,74 @@ class GitDash(App):
         max-height: 20;
         margin: 0;
         padding: 0;
+        background: transparent;
     }
 
     .repo-actions {
         height: 3;
-        padding: 0;
+        padding: 0 1;
         align: left middle;
     }
 
     .action-btn {
-        min-width: 8;
+        min-width: 10;
         height: 1;
         margin: 0 1 0 0;
         border: none;
+        background: #313244;
+        color: #cdd6f4;
     }
 
-    .accent {
-        background: $success;
-        color: $text;
+    .action-btn:hover {
+        background: #45475a;
+        color: #cdd6f4;
+    }
+
+    .action-btn.accent {
+        background: #a6e3a1;
+        color: #1e1e2e;
+        text-style: bold;
+    }
+
+    .action-btn.accent:hover {
+        background: #94e2d5;
+        color: #1e1e2e;
+    }
+
+    .action-btn.fetch-btn {
+        background: #313244;
+        color: #89b4fa;
+    }
+
+    .action-btn.fetch-btn:hover {
+        background: #45475a;
+    }
+
+    .action-btn.branch-btn {
+        background: #313244;
+        color: #a6e3a1;
+    }
+
+    .action-btn.branch-btn:hover {
+        background: #45475a;
+    }
+
+    .action-btn.stash-btn {
+        background: #313244;
+        color: #f9e2af;
+    }
+
+    .action-btn.stash-btn:hover {
+        background: #45475a;
+    }
+
+    .action-btn.diff-btn {
+        background: #313244;
+        color: #cba6f7;
+    }
+
+    .action-btn.diff-btn:hover {
+        background: #45475a;
     }
 
     .sync-btn {
@@ -1216,7 +1314,8 @@ class GitDash(App):
         height: auto;
     }
 
-    /* Modals */
+    /* ── Modals ────────────────────────────────────────── */
+
     #commit-dialog, #branch-dialog, #diff-dialog {
         width: 70;
         height: auto;
@@ -1244,7 +1343,14 @@ class GitDash(App):
     #filediff-list, #log-list, #stage-list {
         height: auto;
         max-height: 12;
-        border: solid $primary-background;
+        border: solid #45475a;
+        margin: 1 0;
+    }
+
+    #search-results {
+        height: auto;
+        max-height: 12;
+        border: solid #45475a;
         margin: 1 0;
     }
 
@@ -1264,12 +1370,14 @@ class GitDash(App):
         margin-bottom: 1;
         width: 100%;
         text-align: center;
+        color: #cdd6f4;
     }
 
     #confirm-details {
-        color: $text-muted;
+        color: #a6adc8;
         margin-bottom: 1;
         width: 100%;
+        padding: 0 1;
     }
 
     #commit-buttons, #branch-buttons {
@@ -1280,13 +1388,13 @@ class GitDash(App):
 
     #diff-log {
         height: 1fr;
-        border: solid $primary-background;
+        border: solid #45475a;
         margin: 1 0;
     }
 
     #md-viewer {
         height: 1fr;
-        border: solid $primary-background;
+        border: solid #45475a;
         margin: 1 0;
         overflow-y: auto;
     }
@@ -1294,17 +1402,26 @@ class GitDash(App):
     #branch-list {
         height: auto;
         max-height: 20;
-        border: solid $primary-background;
+        border: solid #45475a;
         margin: 1 0;
     }
+
+    #stash-lv {
+        height: auto;
+        max-height: 12;
+        border: solid #45475a;
+        margin: 1 0;
+    }
+
+    /* ── Bottom Bars ──────────────────────────────────── */
 
     #git-log {
         dock: bottom;
         height: 12;
         display: none;
-        border-top: solid $primary;
+        border-top: solid #585b70;
         margin: 0 1;
-        background: $surface;
+        background: #181825;
     }
 
     #status-bar {
@@ -1312,16 +1429,15 @@ class GitDash(App):
         height: 1;
         padding: 0 1;
         background: $primary-background;
-        color: $text-muted;
+        color: #a6adc8;
     }
 
     #shortcut-bar {
         dock: bottom;
-        height: 2;
+        height: 3;
         padding: 0 1;
         background: $primary-background;
         color: $text;
-        border-top: solid $surface;
     }
 
     .shortcut-line {
@@ -1366,8 +1482,8 @@ class GitDash(App):
 
     def on_mount(self) -> None:
         title_suffix = self.group_name or str(self.base_path)
-        self.title = f"GitDash — {title_suffix}"
-        self._update_status_bar("Ready")
+        self.title = f"GitDash \u2014 {title_suffix}"
+        self._update_status_bar("\u2713 Ready")
         cards = list(self.query(RepoCard))
         if cards:
             cards[0].focus()
