@@ -1209,7 +1209,7 @@ class GitDash(App):
         height: auto;
     }
 
-    .repo-card:focus {
+    .repo-card:focus, .repo-card:focus-within {
         border: solid $accent;
     }
 
@@ -1217,24 +1217,32 @@ class GitDash(App):
         border: solid $primary-background;
     }
 
-    .repo-card.clean-card:focus {
+    .repo-card.clean-card:focus, .repo-card.clean-card:focus-within {
         border: solid $accent;
     }
 
     .repo-card.dirty-card {
-        border: solid $warning;
+        border: solid $primary-background;
     }
 
-    .repo-card.dirty-card:focus {
+    .repo-card.dirty-card:focus, .repo-card.dirty-card:focus-within {
         border: solid $accent;
     }
 
-    .repo-card.conflict-card {
-        border: solid $error;
+    .repo-card.dirty-card > .repo-header {
+        background: $warning 15%;
     }
 
-    .repo-card.conflict-card:focus {
-        border: solid $error;
+    .repo-card.conflict-card {
+        border: solid $primary-background;
+    }
+
+    .repo-card.conflict-card:focus, .repo-card.conflict-card:focus-within {
+        border: solid $accent;
+    }
+
+    .repo-card.conflict-card > .repo-header {
+        background: $error 15%;
     }
 
     .repo-header {
