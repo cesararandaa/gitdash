@@ -3,9 +3,7 @@
 from __future__ import annotations
 
 import os
-import signal
 import shutil
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -644,110 +642,7 @@ class LogModal(ModalScreen):
         self.app.pop_screen()
 
 
-class TerminalPanel(Vertical):
-    """Inline bottom panel providing a shell in the focused repo's directory."""
-
-    def __init__(self, **kwargs) -> None:
-        super().__init__(**kwargs)
-        self._cwd: Path | None = None
-        self._history: list[str] = []
-        self._history_idx = 0
-
-    def compose(self) -> ComposeResult:
-        yield Static("Terminal", id="terminal-title")
-        yield RichLog(id="terminal-output", wrap=True, markup=False)
-        yield Input(placeholder="$ enter command...", id="terminal-input")
-
-    def set_cwd(self, cwd: Path) -> None:
-        if cwd == self._cwd:
-            return
-        self._cwd = cwd
-        try:
-            self.query_one("#terminal-title", Static).update(f"Terminal — {cwd.name}")
-            output = self.query_one("#terminal-output", RichLog)
-            output.clear()
-            output.write(f"Working directory: {cwd}\n")
-        except NoMatches:
-            pass
-
-    def on_input_submitted(self, event: Input.Submitted) -> None:
-        cmd = event.value.strip()
-        if not cmd:
-            return
-        if self._cwd is None:
-            return
-        try:
-            inp = self.query_one("#terminal-input", Input)
-        except NoMatches:
-            return
-        inp.value = ""
-        self._history.append(cmd)
-        self._history_idx = len(self._history)
-        try:
-            self.query_one("#terminal-output", RichLog).write(f"$ {cmd}")
-        except NoMatches:
-            pass
-        self._run_command(cmd)
-        event.stop()
-
-    @work(thread=True)
-    def _run_command(self, cmd: str) -> None:
-        try:
-            proc = subprocess.Popen(
-                cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, cwd=str(self._cwd), start_new_session=True,
-            )
-            try:
-                stdout, stderr = proc.communicate(timeout=30)
-            except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGTERM)
-                proc.wait(timeout=5)
-                self.app.call_from_thread(self._write_output, "[command timed out after 30s]")
-                return
-            output_text = stdout
-            if stderr:
-                output_text += stderr
-            if output_text.strip():
-                self.app.call_from_thread(self._write_output, output_text.rstrip("\n"))
-            if proc.returncode != 0:
-                self.app.call_from_thread(
-                    self._write_output, f"[exit code: {proc.returncode}]"
-                )
-        except Exception as e:
-            self.app.call_from_thread(self._write_output, f"[error: {e}]")
-
-    def _write_output(self, text: str) -> None:
-        try:
-            self.query_one("#terminal-output", RichLog).write(text)
-        except NoMatches:
-            pass
-
-    def on_key(self, event) -> None:
-        try:
-            inp = self.query_one("#terminal-input", Input)
-        except NoMatches:
-            return
-        if not inp.has_focus:
-            return
-        if event.key == "up" and self._history:
-            self._history_idx = max(0, self._history_idx - 1)
-            inp.value = self._history[self._history_idx]
-            inp.cursor_position = len(inp.value)
-            event.prevent_default()
-            event.stop()
-        elif event.key == "down" and self._history:
-            self._history_idx = min(len(self._history), self._history_idx + 1)
-            if self._history_idx < len(self._history):
-                inp.value = self._history[self._history_idx]
-            else:
-                inp.value = ""
-            inp.cursor_position = len(inp.value)
-            event.prevent_default()
-            event.stop()
-        elif event.key == "escape":
-            self.app.action_toggle_terminal()
-            event.prevent_default()
-            event.stop()
+from gitdash._terminal import Terminal
 
 
 class StageModal(ModalScreen):
@@ -1839,29 +1734,10 @@ class GitDash(App):
 
     #terminal-panel {
         dock: bottom;
-        height: 16;
+        height: 14;
         display: none;
         border-top: solid $accent;
         background: $surface;
-        padding: 0 1;
-    }
-
-    #terminal-title {
-        height: 1;
-        text-style: bold;
-        color: $accent;
-        padding: 0 1;
-    }
-
-    #terminal-output {
-        height: 1fr;
-        background: #1a1a2e;
-        margin: 0;
-        padding: 0 1;
-    }
-
-    #terminal-input {
-        margin: 0;
     }
 
     #commit-dialog, #branch-dialog, #diff-dialog {
@@ -2102,7 +1978,7 @@ class GitDash(App):
             for rp in self.repo_paths:
                 yield RepoCard(rp, classes="repo-card", id=f"card-{rp.name}")
         yield RichLog(id="git-log", wrap=True, markup=False)
-        yield TerminalPanel(id="terminal-panel")
+        yield Terminal(command="bash", id="terminal-panel")
         yield ShortcutBar(id="shortcut-bar")
         yield Static("", id="status-bar")
 
@@ -2442,31 +2318,29 @@ class GitDash(App):
     def action_toggle_terminal(self) -> None:
         """Toggle the inline terminal panel, scoped to the focused repo."""
         try:
-            panel = self.query_one("#terminal-panel", TerminalPanel)
+            term = self.query_one("#terminal-panel", Terminal)
         except NoMatches:
             return
-        if panel.display:
-            panel.display = False
-            # Return focus to the previously focused card
+        if term.display:
+            term.stop()
+            term.display = False
             cards = self._get_cards()
             if cards:
                 cards[max(0, self._focused_card_index())].focus()
         else:
-            # Find focused repo to set cwd
             idx = self._focused_card_index()
             cards = self._get_cards()
             if cards and idx >= 0:
-                panel.set_cwd(cards[idx].repo_path)
+                cwd = str(cards[idx].repo_path)
             elif cards:
-                panel.set_cwd(cards[0].repo_path)
+                cwd = str(cards[0].repo_path)
             else:
                 self._update_status_bar("No repos available for terminal")
                 return
-            panel.display = True
-            try:
-                panel.query_one("#terminal-input", Input).focus()
-            except NoMatches:
-                pass
+            term._cwd = cwd
+            term.display = True
+            term.start()
+            term.focus()
 
     def _do_stage(self, card: RepoCard) -> None:
         self.push_screen(StageModal(card.repo))
