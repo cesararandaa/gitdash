@@ -376,7 +376,6 @@ class ShortcutBar(Vertical):
         ("e", "edit"),
         ("l", "log"),
         ("s", "stash"),
-        ("t", "terminal"),
         ("x", "discard"),
     ]
     GLOBAL_ITEMS: list[tuple[str, str]] = [
@@ -388,6 +387,7 @@ class ShortcutBar(Vertical):
         ("P", "pull"),
         ("g", "group"),
         ("G", "edit groups"),
+        ("t", "terminal"),
         ("r", "refresh"),
         ("!", "ops log"),
         ("?", "help"),
@@ -1382,7 +1382,6 @@ class RepoCard(Vertical, can_focus=True):
         Binding("e", "open_editor", "Edit", show=True),
         Binding("l", "log", "Log", show=True),
         Binding("s", "stash", "Stash", show=True),
-        Binding("t", "terminal", "Terminal", show=True),
         Binding("x", "revert", "Revert", show=True),
         Binding("space", "toggle_collapse", "Toggle", show=True),
         Binding("enter", "toggle_collapse", "Toggle", show=False),
@@ -1599,9 +1598,6 @@ class RepoCard(Vertical, can_focus=True):
 
     def action_stash(self) -> None:
         self.app._do_stash(self)
-
-    def action_terminal(self) -> None:
-        self.app._do_terminal(self)
 
     def action_revert(self) -> None:
         self.app._do_revert(self)
@@ -2084,6 +2080,7 @@ class GitDash(App):
         Binding("g", "switch_group", "Group"),
         Binding("G", "edit_groups", "Edit Groups"),
         Binding("slash", "search", "Search"),
+        Binding("t", "toggle_terminal", "Terminal"),
         Binding("question_mark", "help", "Help"),
         Binding("exclamation_mark", "toggle_log", "Log"),
         Binding("J", "move_repo_down", "Move Down"),
@@ -2105,6 +2102,7 @@ class GitDash(App):
             for rp in self.repo_paths:
                 yield RepoCard(rp, classes="repo-card", id=f"card-{rp.name}")
         yield RichLog(id="git-log", wrap=True, markup=False)
+        yield TerminalPanel(id="terminal-panel")
         yield ShortcutBar(id="shortcut-bar")
         yield Static("", id="status-bar")
 
@@ -2441,8 +2439,34 @@ class GitDash(App):
             on_confirm,
         )
 
-    def _do_terminal(self, card: RepoCard) -> None:
-        self.push_screen(TerminalModal(card.repo_path))
+    def action_toggle_terminal(self) -> None:
+        """Toggle the inline terminal panel, scoped to the focused repo."""
+        try:
+            panel = self.query_one("#terminal-panel", TerminalPanel)
+        except NoMatches:
+            return
+        if panel.display:
+            panel.display = False
+            # Return focus to the previously focused card
+            cards = self._get_cards()
+            if cards:
+                cards[max(0, self._focused_card_index())].focus()
+        else:
+            # Find focused repo to set cwd
+            idx = self._focused_card_index()
+            cards = self._get_cards()
+            if cards and idx >= 0:
+                panel.set_cwd(cards[idx].repo_path)
+            elif cards:
+                panel.set_cwd(cards[0].repo_path)
+            else:
+                self._update_status_bar("No repos available for terminal")
+                return
+            panel.display = True
+            try:
+                panel.query_one("#terminal-input", Input).focus()
+            except NoMatches:
+                pass
 
     def _do_stage(self, card: RepoCard) -> None:
         self.push_screen(StageModal(card.repo))
@@ -2710,6 +2734,7 @@ class GitDash(App):
                     "- `P`: pull all repos",
                     "- `g`: switch group",
                     "- `G`: edit groups (add, remove, reorder, set paths)",
+                    "- `t`: toggle inline terminal (runs in focused repo dir)",
                     "- `!`: toggle git operations log",
                     "- `J` / `K`: move repo down or up",
                     "- `S`: save repo order",
@@ -2722,7 +2747,6 @@ class GitDash(App):
                     "- `e`: open repo or file in editor",
                     "- `l`: view commit log and patch",
                     "- `s`: manage stashes",
-                    "- `t`: open terminal in repo directory",
                     "- `x`: discard local changes",
                     "",
                     "## Status Cues",
