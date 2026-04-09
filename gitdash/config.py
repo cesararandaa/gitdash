@@ -112,6 +112,35 @@ path = "~/code"
     return CONFIG_FILE
 
 
+def save_all_groups(config: "Config") -> None:
+    """Rewrite config.toml entirely from a Config object, preserving top-level settings."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+
+    lines: list[str] = []
+
+    if config.default_group:
+        lines.append(f'default_group = "{config.default_group}"\n')
+    if config.fetch_on_startup:
+        lines.append("fetch_on_startup = true\n")
+    if config.editor:
+        lines.append(f'editor = "{config.editor}"\n')
+
+    if lines:
+        lines.append("\n")
+
+    for g in config.groups:
+        lines.append("[[groups]]\n")
+        lines.append(f'name = "{g.name}"\n')
+        lines.append(f'path = "{g.path}"\n')
+        if g.repos:
+            repo_names = [rp.name for rp in g.repos]
+            repos_value = "[" + ", ".join(f'"{n}"' for n in repo_names) + "]"
+            lines.append(f"repos = {repos_value}\n")
+        lines.append("\n")
+
+    CONFIG_FILE.write_text("".join(lines))
+
+
 def save_repo_order(group_name: str, repo_paths: list[Path]) -> None:
     """Update the repos list for a group in config.toml, preserving other config."""
     if not CONFIG_FILE.exists():
