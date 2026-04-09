@@ -961,6 +961,7 @@ class GroupEditorModal(ModalScreen):
     def _apply_save(self) -> None:
         from gitdash.config import save_all_groups, RepoGroup
         new_groups = []
+        live_repo_map: dict[str, list[Path]] = {}
         for g in self._groups:
             name = g["name"].strip()
             if not name:
@@ -970,16 +971,24 @@ class GroupEditorModal(ModalScreen):
             checked = g["checked"]
             all_names = {r.name for r in discovered}
             if not checked or checked == all_names:
-                # Empty or all selected = auto-discover (no explicit repos key)
-                repos = discovered
+                # Auto-discover: write empty repos list (omits key in TOML),
+                # but keep discovered repos for the current session
+                save_repos: list[Path] = []
+                live_repos = discovered
             else:
-                repos = [rp for rp in discovered if rp.name in checked]
-            new_groups.append(RepoGroup(name=name, path=path, repos=repos))
+                save_repos = [rp for rp in discovered if rp.name in checked]
+                live_repos = save_repos
+            new_groups.append(RepoGroup(name=name, path=path, repos=save_repos))
+            live_repo_map[name] = live_repos
         self._config.groups = new_groups
         try:
             save_all_groups(self._config)
         except Exception as e:
             self.notify(f"Config save failed: {e}", severity="error")
+        # Restore live repos in-memory so the current session loads correctly
+        for grp in self._config.groups:
+            if not grp.repos and grp.name in live_repo_map:
+                grp.repos = live_repo_map[grp.name]
         self.dismiss(self._config)
 
     def action_cancel(self) -> None:

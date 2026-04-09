@@ -112,6 +112,11 @@ path = "~/code"
     return CONFIG_FILE
 
 
+def _toml_str(value: str) -> str:
+    """Return a TOML-safe double-quoted string."""
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
 def save_all_groups(config: "Config") -> None:
     """Rewrite config.toml entirely from a Config object, preserving top-level settings."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
@@ -119,26 +124,25 @@ def save_all_groups(config: "Config") -> None:
     lines: list[str] = []
 
     if config.default_group:
-        lines.append(f'default_group = "{config.default_group}"\n')
+        lines.append(f"default_group = {_toml_str(config.default_group)}\n")
     if config.fetch_on_startup:
         lines.append("fetch_on_startup = true\n")
     if config.editor:
-        lines.append(f'editor = "{config.editor}"\n')
+        lines.append(f"editor = {_toml_str(config.editor)}\n")
 
     if lines:
         lines.append("\n")
 
     for g in config.groups:
         lines.append("[[groups]]\n")
-        lines.append(f'name = "{g.name}"\n')
+        lines.append(f"name = {_toml_str(g.name)}\n")
         try:
             display_path = "~/" + str(g.path.relative_to(Path.home()))
         except ValueError:
             display_path = str(g.path)
-        lines.append(f'path = "{display_path}"\n')
+        lines.append(f"path = {_toml_str(display_path)}\n")
         if g.repos:
-            repo_names = [rp.name for rp in g.repos]
-            repos_value = "[" + ", ".join(f'"{n}"' for n in repo_names) + "]"
+            repos_value = "[" + ", ".join(_toml_str(rp.name) for rp in g.repos) + "]"
             lines.append(f"repos = {repos_value}\n")
         lines.append("\n")
 
