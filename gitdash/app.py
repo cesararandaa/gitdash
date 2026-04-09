@@ -2343,6 +2343,15 @@ class GitDash(App):
         else:
             # Terminal already running — cd to group root before executing
             run_cmd = f"cd {cwd} && {cmd.cmd}"
+        # Hide the shortcut/status bars so they don't overlap the terminal
+        try:
+            self.query_one("#shortcut-bar").display = False
+        except NoMatches:
+            pass
+        try:
+            self.query_one("#status-bar").display = False
+        except NoMatches:
+            pass
         term.display = True
         term.focus()
         # Small delay to let the terminal initialize before sending input
@@ -2649,9 +2658,25 @@ class GitDash(App):
             term = self.query_one("#terminal-panel", Terminal)
         except NoMatches:
             return
+
+        # Grab the bottom-docked bars that would overlap the terminal panel
+        try:
+            shortcut_bar = self.query_one("#shortcut-bar")
+        except NoMatches:
+            shortcut_bar = None
+        try:
+            status_bar = self.query_one("#status-bar")
+        except NoMatches:
+            status_bar = None
+
         if term.display:
             # Just hide and unfocus — keep the shell alive
             term.display = False
+            # Restore the shortcut/status bars
+            if shortcut_bar is not None:
+                shortcut_bar.display = True
+            if status_bar is not None:
+                status_bar.display = True
             cards = self._get_cards()
             if cards:
                 cards[max(0, self._focused_card_index())].focus()
@@ -2668,6 +2693,11 @@ class GitDash(App):
                     self._update_status_bar("No repos available for terminal")
                     return
                 term.start()
+            # Hide the shortcut/status bars so they don't overlap the terminal
+            if shortcut_bar is not None:
+                shortcut_bar.display = False
+            if status_bar is not None:
+                status_bar.display = False
             term.display = True
             term.focus()
 
