@@ -278,6 +278,7 @@ class ShortcutBar(Vertical):
         ("F", "fetch"),
         ("P", "pull"),
         ("g", "group"),
+        ("G", "edit groups"),
         ("r", "refresh"),
         ("!", "ops log"),
         ("?", "help"),
@@ -774,6 +775,224 @@ class DiffModal(ModalScreen):
 
     def action_close(self) -> None:
         self.app.pop_screen()
+
+
+class GroupEditorModal(ModalScreen):
+    """Modal to create, edit, reorder, and delete repo groups."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, config) -> None:
+        super().__init__()
+        self._config = config
+        # Working copy: list of dicts with name, path, discovered, checked
+        self._groups: list[dict] = []
+        for g in config.groups:
+            self._groups.append({
+                "name": g.name,
+                "path": str(g.path),
+                "discovered": list(g.repos),
+                "checked": {rp.name for rp in g.repos},
+            })
+        self._sel = 0
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="group-editor-dialog"):
+            yield Label("\u2699 Edit Groups", id="branch-title")
+            with Horizontal(id="group-editor-body"):
+                with Vertical(id="group-left-panel"):
+                    yield Label("Groups", classes="grp-section-label")
+                    yield ListView(id="group-list")
+                    with Horizontal(id="group-left-buttons"):
+                        yield Button("\u2191", id="btn-grp-up", variant="default")
+                        yield Button("\u2193", id="btn-grp-down", variant="default")
+                        yield Button("+ Add", id="btn-grp-add", variant="primary")
+                        yield Button("\u2715 Del", id="btn-grp-del", variant="error")
+                with Vertical(id="group-right-panel"):
+                    yield Label("Name", classes="grp-section-label")
+                    yield Input(placeholder="group name", id="grp-name-input")
+                    yield Label("Path", classes="grp-section-label")
+                    with Horizontal(id="grp-path-row"):
+                        yield Input(placeholder="~/path/to/repos", id="grp-path-input")
+                        yield Button("Scan", id="btn-scan", variant="primary")
+                    yield Label("Repos \u2014 select to toggle (all or none checked = auto-discover)", id="grp-repos-label", classes="grp-section-label")
+                    yield ListView(id="group-repo-list")
+            with Horizontal(id="group-editor-buttons"):
+                yield Button("\u2713 Save & Apply", variant="success", id="btn-grp-save")
+                yield Button("\u2717 Cancel", variant="error", id="btn-grp-cancel")
+
+    def on_mount(self) -> None:
+        self._render_group_list()
+        if self._groups:
+            self._load_right_panel(0)
+        else:
+            self.query_one("#group-list", ListView).focus()
+
+    # ── Rendering helpers ────────────────────────────────────────────────────
+
+    def _render_group_list(self) -> None:
+        lv = self.query_one("#group-list", ListView)
+        lv.clear()
+        for i, g in enumerate(self._groups):
+            marker = "\u25b6 " if i == self._sel else "  "
+            lv.append(ListItem(Label(f"{marker}{g['name']}"), id=f"grp-{i}"))
+
+    def _load_right_panel(self, idx: int) -> None:
+        if not self._groups or idx >= len(self._groups):
+            return
+        g = self._groups[idx]
+        self.query_one("#grp-name-input", Input).value = g["name"]
+        self.query_one("#grp-path-input", Input).value = g["path"]
+        self._render_repo_list(idx)
+
+    def _render_repo_list(self, idx: int) -> None:
+        lv = self.query_one("#group-repo-list", ListView)
+        lv.clear()
+        if idx >= len(self._groups):
+            return
+        g = self._groups[idx]
+        discovered = g["discovered"]
+        if not discovered:
+            lv.append(ListItem(Label("  (no repos \u2014 enter path above and press Scan)")))
+            return
+        for rp in discovered:
+            checked = rp.name in g["checked"]
+            mark = "\u25c9" if checked else "\u25cb"
+            lv.append(ListItem(Label(f"  {mark} {rp.name}"), id=f"repo-{rp.name}"))
+
+    def _scan_path(self, idx: int) -> None:
+        if idx >= len(self._groups):
+            return
+        from gitdash.config import _discover_repos
+        raw = self.query_one("#grp-path-input", Input).value.strip()
+        if raw:
+            self._groups[idx]["path"] = raw
+        path = Path(self._groups[idx]["path"]).expanduser()
+        discovered = _discover_repos(path)
+        self._groups[idx]["discovered"] = discovered
+        # Preserve existing selection; default all checked for new groups
+        existing = self._groups[idx]["checked"]
+        if not existing:
+            self._groups[idx]["checked"] = {r.name for r in discovered}
+        else:
+            self._groups[idx]["checked"] = {n for n in existing if any(r.name == n for r in discovered)}
+            if not self._groups[idx]["checked"]:
+                self._groups[idx]["checked"] = {r.name for r in discovered}
+        self._render_repo_list(idx)
+
+    # ── State helpers ────────────────────────────────────────────────────────
+
+    def _flush_inputs(self) -> None:
+        """Save name/path inputs back into the working state for current group."""
+        if not self._groups or self._sel >= len(self._groups):
+            return
+        name = self.query_one("#grp-name-input", Input).value.strip()
+        path = self.query_one("#grp-path-input", Input).value.strip()
+        if name:
+            self._groups[self._sel]["name"] = name
+        if path:
+            self._groups[self._sel]["path"] = path
+
+    # ── Events ───────────────────────────────────────────────────────────────
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        if event.list_view.id == "group-list":
+            if event.item and event.item.id and event.item.id.startswith("grp-"):
+                self._flush_inputs()
+                idx = int(event.item.id.removeprefix("grp-"))
+                self._sel = idx
+                self._render_group_list()
+                self._load_right_panel(idx)
+        elif event.list_view.id == "group-repo-list":
+            if not event.item or not event.item.id or not event.item.id.startswith("repo-"):
+                return
+            repo_name = event.item.id.removeprefix("repo-")
+            g = self._groups[self._sel]
+            if repo_name in g["checked"]:
+                g["checked"].discard(repo_name)
+            else:
+                g["checked"].add(repo_name)
+            self._render_repo_list(self._sel)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id
+        if bid == "btn-grp-up":
+            if self._sel > 0:
+                self._flush_inputs()
+                i = self._sel
+                self._groups[i], self._groups[i - 1] = self._groups[i - 1], self._groups[i]
+                self._sel -= 1
+                self._render_group_list()
+                self._load_right_panel(self._sel)
+        elif bid == "btn-grp-down":
+            if self._sel < len(self._groups) - 1:
+                self._flush_inputs()
+                i = self._sel
+                self._groups[i], self._groups[i + 1] = self._groups[i + 1], self._groups[i]
+                self._sel += 1
+                self._render_group_list()
+                self._load_right_panel(self._sel)
+        elif bid == "btn-grp-add":
+            self._flush_inputs()
+            self._groups.append({"name": "new-group", "path": "~", "discovered": [], "checked": set()})
+            self._sel = len(self._groups) - 1
+            self._render_group_list()
+            self._load_right_panel(self._sel)
+            self.query_one("#grp-name-input", Input).focus()
+        elif bid == "btn-grp-del":
+            if self._groups:
+                self._groups.pop(self._sel)
+                self._sel = max(0, self._sel - 1)
+                self._render_group_list()
+                if self._groups:
+                    self._load_right_panel(self._sel)
+                else:
+                    self.query_one("#grp-name-input", Input).value = ""
+                    self.query_one("#grp-path-input", Input).value = ""
+                    self.query_one("#group-repo-list", ListView).clear()
+        elif bid == "btn-scan":
+            self._scan_path(self._sel)
+        elif bid == "btn-grp-save":
+            self._flush_inputs()
+            self._apply_save()
+        elif bid == "btn-grp-cancel":
+            self.dismiss(None)
+
+    def _apply_save(self) -> None:
+        from gitdash.config import save_all_groups, RepoGroup
+        new_groups = []
+        live_repo_map: dict[str, list[Path]] = {}
+        for g in self._groups:
+            name = g["name"].strip()
+            if not name:
+                continue
+            path = Path(g["path"]).expanduser()
+            discovered = g["discovered"]
+            checked = g["checked"]
+            all_names = {r.name for r in discovered}
+            if not checked or checked == all_names:
+                # Auto-discover: write empty repos list (omits key in TOML),
+                # but keep discovered repos for the current session
+                save_repos: list[Path] = []
+                live_repos = discovered
+            else:
+                save_repos = [rp for rp in discovered if rp.name in checked]
+                live_repos = save_repos
+            new_groups.append(RepoGroup(name=name, path=path, repos=save_repos))
+            live_repo_map[name] = live_repos
+        self._config.groups = new_groups
+        try:
+            save_all_groups(self._config)
+        except Exception as e:
+            self.notify(f"Config save failed: {e}", severity="error")
+        # Restore live repos in-memory so the current session loads correctly
+        for grp in self._config.groups:
+            if not grp.repos and grp.name in live_repo_map:
+                grp.repos = live_repo_map[grp.name]
+        self.dismiss(self._config)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
 
 
 class FileDiffModal(ModalScreen):
@@ -1485,6 +1704,81 @@ class GitDash(App):
         margin: 1 0;
     }
 
+    /* ── Group Editor ─────────────────────────────────── */
+
+    #group-editor-dialog {
+        width: 95%;
+        height: 85%;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+    }
+
+    #group-editor-body {
+        height: 1fr;
+        margin: 1 0;
+    }
+
+    #group-left-panel {
+        width: 28;
+        border-right: solid $primary-background;
+        padding-right: 1;
+    }
+
+    #group-list {
+        height: 1fr;
+        border: solid $primary-background;
+        margin: 1 0;
+    }
+
+    #group-left-buttons {
+        height: 3;
+        align: left middle;
+    }
+
+    #group-left-buttons Button {
+        min-width: 5;
+        margin-right: 1;
+        height: 1;
+        border: none;
+    }
+
+    #group-right-panel {
+        width: 1fr;
+        padding-left: 1;
+    }
+
+    .grp-section-label {
+        color: $text-muted;
+        height: 1;
+        margin-top: 1;
+    }
+
+    #grp-path-row {
+        height: 3;
+    }
+
+    #grp-path-row Input {
+        width: 1fr;
+    }
+
+    #grp-path-row Button {
+        min-width: 8;
+        margin-left: 1;
+    }
+
+    #group-repo-list {
+        height: 1fr;
+        border: solid $primary-background;
+        margin: 1 0;
+    }
+
+    #group-editor-buttons {
+        height: 3;
+        align: center middle;
+        margin-top: 1;
+    }
+
     /* ── Bottom Bars ──────────────────────────────────── */
 
     #git-log {
@@ -1527,6 +1821,7 @@ class GitDash(App):
         Binding("F", "fetch_all", "Fetch All"),
         Binding("P", "pull_all", "Pull All"),
         Binding("g", "switch_group", "Group"),
+        Binding("G", "edit_groups", "Edit Groups"),
         Binding("slash", "search", "Search"),
         Binding("question_mark", "help", "Help"),
         Binding("exclamation_mark", "toggle_log", "Log"),
@@ -2132,6 +2427,7 @@ class GitDash(App):
                     "- `F`: fetch all repos",
                     "- `P`: pull all repos",
                     "- `g`: switch group",
+                    "- `G`: edit groups (add, remove, reorder, set paths)",
                     "- `!`: toggle git operations log",
                     "- `J` / `K`: move repo down or up",
                     "- `S`: save repo order",
@@ -2166,7 +2462,27 @@ class GitDash(App):
             self._on_group_selected,
         )
 
-    def _on_group_selected(self, result: str | None) -> None:
+    def action_edit_groups(self) -> None:
+        if not self.config:
+            self._update_status_bar("No config loaded — run with a config file")
+            return
+        self.push_screen(GroupEditorModal(self.config), self._on_groups_edited)
+
+    async def _on_groups_edited(self, result) -> None:
+        if result is None:
+            return
+        self.config = result
+        # Stay on current group if it still exists, else fall back to first
+        group = self.config.get_group(self.group_name) if self.group_name else None
+        if not group and self.config.groups:
+            group = self.config.groups[0]
+        if not group:
+            self._update_status_bar("No groups defined")
+            return
+        await self._load_group(group)
+        self._update_status_bar(f"Groups saved \u2014 showing: {group.name}")
+
+    async def _on_group_selected(self, result: str | None) -> None:
         if result is None or result.startswith("__create__"):
             return
         group = self.config.get_group(result)
@@ -2176,22 +2492,22 @@ class GitDash(App):
         if not group.repos:
             self._update_status_bar(f"No repos in group '{result}'")
             return
-        # Remove old cards
+        await self._load_group(group)
+        self._update_status_bar(f"Switched to group: {group.name}")
+
+    async def _load_group(self, group) -> None:
+        """Remove existing repo cards and mount cards for the given group."""
         scroll = self.query_one("#main-scroll", VerticalScroll)
-        for card in list(self.query(RepoCard)):
-            card.remove()
-        # Update state
+        await scroll.remove_children(RepoCard)
         self.group_name = group.name
         self.base_path = group.path
         self.repo_paths = group.repos
-        self.title = f"GitDash — {group.name}"
-        # Mount new cards
+        self.title = f"GitDash \u2014 {group.name}"
         for rp in self.repo_paths:
-            scroll.mount(RepoCard(rp, classes="repo-card", id=f"card-{rp.name}"))
+            await scroll.mount(RepoCard(rp, classes="repo-card", id=f"card-{rp.name}"))
         cards = list(self.query(RepoCard))
         if cards:
             cards[0].focus()
-        self._update_status_bar(f"Switched to group: {group.name}")
 
 
 def main() -> None:
