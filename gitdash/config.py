@@ -227,11 +227,12 @@ def save_all_groups(config: "Config") -> None:
             repos_value = "[" + ", ".join(_toml_str(rp.name) for rp in g.repos) + "]"
             lines.append(f"repos = {repos_value}\n")
         lines.append("\n")
-        for cmd in g.commands:
+        for j, cmd in enumerate(g.commands):
             lines.append("[[groups.commands]]\n")
             lines.append(f"name = {_toml_str(cmd.name)}\n")
             lines.append(f"cmd = {_toml_str(cmd.cmd)}\n")
-            lines.append("\n")
+            if j < len(g.commands) - 1:
+                lines.append("\n")
 
     _atomic_write(CONFIG_FILE, "".join(lines))
 

@@ -2339,10 +2339,14 @@ class GitDash(App):
         if term.emulator is None:
             term._cwd = cwd
             term.start()
+            run_cmd = cmd.cmd
+        else:
+            # Terminal already running — cd to group root before executing
+            run_cmd = f"cd {cwd} && {cmd.cmd}"
         term.display = True
         term.focus()
         # Small delay to let the terminal initialize before sending input
-        self.set_timer(0.1, lambda: self._send_terminal_command(term, cmd.cmd))
+        self.set_timer(0.1, lambda: self._send_terminal_command(term, run_cmd))
         self._log_action(f"[cmd] {cmd.name}: {cmd.cmd}")
         self._update_status_bar(f"Running: {cmd.name}")
 
