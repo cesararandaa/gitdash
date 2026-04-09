@@ -1277,6 +1277,7 @@ class RepoCard(Vertical, can_focus=True):
         Binding("e", "open_editor", "Edit", show=True),
         Binding("l", "log", "Log", show=True),
         Binding("s", "stash", "Stash", show=True),
+        Binding("u", "undo_commit", "Undo commit", show=True),
         Binding("x", "revert", "Revert", show=True),
         Binding("space", "toggle_collapse", "Toggle", show=True),
         Binding("enter", "toggle_collapse", "Toggle", show=False),
@@ -1304,6 +1305,7 @@ class RepoCard(Vertical, can_focus=True):
                 yield Button("\u2387 Branch", id=f"brn-{self.repo_path.name}", classes="action-btn branch-btn")
                 yield Button("\u2261 Stash", id=f"stash-{self.repo_path.name}", classes="action-btn stash-btn")
                 yield Button("\u2713 Commit", id=f"cmt-{self.repo_path.name}", classes="action-btn accent")
+                yield Button("\u21a9 Undo", id=f"undo-{self.repo_path.name}", classes="action-btn")
                 yield Button("\u00b1 Diff", id=f"diff-{self.repo_path.name}", classes="action-btn diff-btn")
 
     def on_mount(self) -> None:
@@ -1493,6 +1495,9 @@ class RepoCard(Vertical, can_focus=True):
 
     def action_stash(self) -> None:
         self.app._do_stash(self)
+
+    def action_undo_commit(self) -> None:
+        self.app._do_undo_commit(self)
 
     def action_revert(self) -> None:
         self.app._do_revert(self)
@@ -2067,6 +2072,8 @@ class GitDash(App):
             self._do_stash(card)
         elif bid.startswith("cmt-"):
             self._do_commit(card)
+        elif bid.startswith("undo-"):
+            self._do_undo_commit(card)
         elif bid.startswith("diff-"):
             self._do_diff(card)
 
@@ -2391,6 +2398,56 @@ class GitDash(App):
         ai_cfg = self.config.ai if self.config else None
         self.push_screen(CommitModal(diff_text=diff_text, ai_cfg=ai_cfg), on_message)
 
+    def _do_undo_commit(self, card: RepoCard) -> None:
+        """Undo the last commit (soft reset), only if it hasn't been pushed."""
+        name = card.repo_path.name
+        ahead = card.status.get("ahead", 0)
+        tracking = card.status.get("tracking")
+        if not tracking and not ahead:
+            # No upstream — commits are local-only, safe to undo
+            pass
+        elif not ahead:
+            self._update_status_bar(f"No unpushed commits to undo in {name}")
+            return
+
+        # Get last commit message for confirmation
+        try:
+            last_msg = card.repo.head.commit.message.strip().split("\n")[0][:60]
+            short_sha = card.repo.head.commit.hexsha[:7]
+        except Exception:
+            last_msg = "(unknown)"
+            short_sha = "?"
+
+        def on_confirm(confirmed: bool) -> None:
+            if not confirmed:
+                return
+            # Re-check ahead count with fresh status to avoid undoing pushed commits
+            fresh = card._read_status()
+            fresh_tracking = fresh.get("tracking")
+            fresh_ahead = fresh.get("ahead", 0)
+            if fresh_tracking and not fresh_ahead:
+                self._update_status_bar(f"Commits already pushed; undo cancelled for {name}")
+                return
+            try:
+                self._log_action(f"[{name}] git reset --soft HEAD~1")
+                card.repo.git.reset("--soft", "HEAD~1")
+                card.refresh_status()
+                self._update_status_bar(f"Undid commit {short_sha} in {name}")
+                self._log_action(f"[{name}] undo commit OK")
+            except GitCommandError as e:
+                self._log_action(f"[{name}] ERROR undo commit: {e}")
+                self._update_status_bar(f"Undo commit failed: {e}")
+
+        self.push_screen(
+            ConfirmModal(
+                f"Undo last commit in {name}?",
+                details=f"{short_sha} {last_msg}",
+                confirm_label="Undo",
+                confirm_variant="warning",
+            ),
+            on_confirm,
+        )
+
     def _do_diff(self, card: RepoCard, single_file: tuple[str, str] | None = None) -> None:
         if single_file:
             # Show diff for a single file directly
@@ -2623,6 +2680,7 @@ class GitDash(App):
                     "- `e`: open repo or file in editor",
                     "- `l`: view commit log and patch",
                     "- `s`: manage stashes",
+                    "- `u`: undo last commit (before push)",
                     "- `x`: discard local changes",
                     "",
                     "## Status Cues",
