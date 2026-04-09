@@ -815,7 +815,7 @@ class GroupEditorModal(ModalScreen):
                     with Horizontal(id="grp-path-row"):
                         yield Input(placeholder="~/path/to/repos", id="grp-path-input")
                         yield Button("Scan", id="btn-scan", variant="primary")
-                    yield Label("Repos \u2014 select to toggle (all checked = auto-discover)", id="grp-repos-label", classes="grp-section-label")
+                    yield Label("Repos \u2014 select to toggle (all or none checked = auto-discover)", id="grp-repos-label", classes="grp-section-label")
                     yield ListView(id="group-repo-list")
             with Horizontal(id="group-editor-buttons"):
                 yield Button("\u2713 Save & Apply", variant="success", id="btn-grp-save")
@@ -969,16 +969,17 @@ class GroupEditorModal(ModalScreen):
             discovered = g["discovered"]
             checked = g["checked"]
             all_names = {r.name for r in discovered}
-            if discovered and checked and checked != all_names:
-                repos = [rp for rp in discovered if rp.name in checked]
-            else:
+            if not checked or checked == all_names:
+                # Empty or all selected = auto-discover (no explicit repos key)
                 repos = discovered
+            else:
+                repos = [rp for rp in discovered if rp.name in checked]
             new_groups.append(RepoGroup(name=name, path=path, repos=repos))
         self._config.groups = new_groups
         try:
             save_all_groups(self._config)
         except Exception as e:
-            self._config.groups = new_groups  # still apply in-memory even if save fails
+            self.notify(f"Config save failed: {e}", severity="error")
         self.dismiss(self._config)
 
     def action_cancel(self) -> None:

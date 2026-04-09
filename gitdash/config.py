@@ -131,7 +131,11 @@ def save_all_groups(config: "Config") -> None:
     for g in config.groups:
         lines.append("[[groups]]\n")
         lines.append(f'name = "{g.name}"\n')
-        lines.append(f'path = "{g.path}"\n')
+        try:
+            display_path = "~/" + str(g.path.relative_to(Path.home()))
+        except ValueError:
+            display_path = str(g.path)
+        lines.append(f'path = "{display_path}"\n')
         if g.repos:
             repo_names = [rp.name for rp in g.repos]
             repos_value = "[" + ", ".join(f'"{n}"' for n in repo_names) + "]"
