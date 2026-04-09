@@ -375,6 +375,7 @@ class ShortcutBar(Vertical):
         ("e", "edit"),
         ("l", "log"),
         ("s", "stash"),
+        ("t", "terminal"),
         ("x", "discard"),
     ]
     GLOBAL_ITEMS: list[tuple[str, str]] = [
@@ -637,6 +638,106 @@ class LogModal(ModalScreen):
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         self.app.pop_screen()
+
+    def action_close(self) -> None:
+        self.app.pop_screen()
+
+
+class TerminalModal(ModalScreen):
+    """Modal providing an interactive shell in the repo directory."""
+
+    BINDINGS = [Binding("escape", "close", "Close")]
+
+    def __init__(self, cwd: Path) -> None:
+        super().__init__()
+        self.cwd = cwd
+        self._history: list[str] = []
+        self._history_idx = 0
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="terminal-dialog"):
+            yield Label(f"Terminal — {self.cwd.name}", id="terminal-title")
+            yield RichLog(id="terminal-output", wrap=True, markup=False)
+            yield Input(placeholder="$ enter command...", id="terminal-input")
+            with Horizontal(id="terminal-buttons"):
+                yield Button("Clear", variant="warning", id="btn-term-clear")
+                yield Button("Close", variant="primary", id="btn-term-close")
+
+    def on_mount(self) -> None:
+        output = self.query_one("#terminal-output", RichLog)
+        output.write(f"Working directory: {self.cwd}")
+        output.write("Type commands and press Enter. Press Escape to close.\n")
+        self.query_one("#terminal-input", Input).focus()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        cmd = event.value.strip()
+        if not cmd:
+            return
+        inp = self.query_one("#terminal-input", Input)
+        inp.value = ""
+        self._history.append(cmd)
+        self._history_idx = len(self._history)
+        output = self.query_one("#terminal-output", RichLog)
+        output.write(f"$ {cmd}")
+        self._run_command(cmd)
+
+    @work(thread=True)
+    def _run_command(self, cmd: str) -> None:
+        try:
+            result = subprocess.run(
+                cmd, shell=True, capture_output=True, text=True,
+                cwd=str(self.cwd), timeout=30,
+            )
+            output_text = result.stdout
+            if result.stderr:
+                output_text += result.stderr
+            if output_text.strip():
+                self.app.call_from_thread(self._write_output, output_text.rstrip("\n"))
+            if result.returncode != 0:
+                self.app.call_from_thread(
+                    self._write_output, f"[exit code: {result.returncode}]"
+                )
+        except subprocess.TimeoutExpired:
+            self.app.call_from_thread(self._write_output, "[command timed out after 30s]")
+        except Exception as e:
+            self.app.call_from_thread(self._write_output, f"[error: {e}]")
+
+    def _write_output(self, text: str) -> None:
+        try:
+            output = self.query_one("#terminal-output", RichLog)
+            output.write(text)
+        except NoMatches:
+            pass
+
+    def on_key(self, event) -> None:
+        inp = self.query_one("#terminal-input", Input)
+        if not inp.has_focus:
+            return
+        if event.key == "up" and self._history:
+            self._history_idx = max(0, self._history_idx - 1)
+            inp.value = self._history[self._history_idx]
+            inp.cursor_position = len(inp.value)
+            event.prevent_default()
+            event.stop()
+        elif event.key == "down" and self._history:
+            self._history_idx = min(len(self._history), self._history_idx + 1)
+            if self._history_idx < len(self._history):
+                inp.value = self._history[self._history_idx]
+            else:
+                inp.value = ""
+            inp.cursor_position = len(inp.value)
+            event.prevent_default()
+            event.stop()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-term-clear":
+            try:
+                self.query_one("#terminal-output", RichLog).clear()
+            except NoMatches:
+                pass
+            return
+        if event.button.id == "btn-term-close":
+            self.app.pop_screen()
 
     def action_close(self) -> None:
         self.app.pop_screen()
@@ -1274,6 +1375,7 @@ class RepoCard(Vertical, can_focus=True):
         Binding("e", "open_editor", "Edit", show=True),
         Binding("l", "log", "Log", show=True),
         Binding("s", "stash", "Stash", show=True),
+        Binding("t", "terminal", "Terminal", show=True),
         Binding("x", "revert", "Revert", show=True),
         Binding("space", "toggle_collapse", "Toggle", show=True),
         Binding("enter", "toggle_collapse", "Toggle", show=False),
@@ -1490,6 +1592,9 @@ class RepoCard(Vertical, can_focus=True):
 
     def action_stash(self) -> None:
         self.app._do_stash(self)
+
+    def action_terminal(self) -> None:
+        self.app._do_terminal(self)
 
     def action_revert(self) -> None:
         self.app._do_revert(self)
@@ -1728,6 +1833,39 @@ class GitDash(App):
     }
 
     /* ── Modals ────────────────────────────────────────── */
+
+    #terminal-dialog {
+        width: 100;
+        height: 85%;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+        margin: 2 4;
+    }
+
+    #terminal-title {
+        text-style: bold;
+        margin-bottom: 1;
+        width: 100%;
+        text-align: center;
+        color: $text;
+    }
+
+    #terminal-output {
+        height: 1fr;
+        border: solid $primary-background;
+        margin: 1 0;
+        background: #1a1a2e;
+    }
+
+    #terminal-input {
+        margin: 0 0 1 0;
+    }
+
+    #terminal-buttons {
+        height: 3;
+        align: center middle;
+    }
 
     #commit-dialog, #branch-dialog, #diff-dialog {
         width: 70;
@@ -2302,6 +2440,9 @@ class GitDash(App):
             on_confirm,
         )
 
+    def _do_terminal(self, card: RepoCard) -> None:
+        self.push_screen(TerminalModal(card.repo_path))
+
     def _do_stage(self, card: RepoCard) -> None:
         self.push_screen(StageModal(card.repo))
 
@@ -2580,6 +2721,7 @@ class GitDash(App):
                     "- `e`: open repo or file in editor",
                     "- `l`: view commit log and patch",
                     "- `s`: manage stashes",
+                    "- `t`: open terminal in repo directory",
                     "- `x`: discard local changes",
                     "",
                     "## Status Cues",
