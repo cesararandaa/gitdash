@@ -531,6 +531,29 @@ class MessageModal(ModalScreen[None]):
         self.app.pop_screen()
 
 
+class CommandsSection(Horizontal):
+    """A row of buttons for custom group commands."""
+
+    def __init__(self, commands: list | None = None, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.commands = commands or []
+
+    def compose(self) -> ComposeResult:
+        if self.commands:
+            yield Static("⚡", classes="commands-icon")
+            for i, cmd in enumerate(self.commands):
+                yield Button(cmd.name, id=f"customcmd-{i}", classes="cmd-btn")
+
+    def update_commands(self, commands: list) -> None:
+        """Replace displayed commands with a new list."""
+        self.commands = commands
+        self.remove_children()
+        if commands:
+            self.mount(Static("⚡", classes="commands-icon"))
+            for i, cmd in enumerate(commands):
+                self.mount(Button(cmd.name, id=f"customcmd-{i}", classes="cmd-btn"))
+
+
 class ShortcutBar(Vertical):
     """Curated bottom bar showing the primary shortcuts."""
 
@@ -1918,6 +1941,41 @@ class GitDash(App):
         height: auto;
     }
 
+    /* ── Custom Commands ──────────────────────────────── */
+
+    #commands-section {
+        height: auto;
+        min-height: 0;
+        padding: 0 1;
+        margin: 0 1;
+        align: left middle;
+    }
+
+    #commands-section:empty {
+        display: none;
+    }
+
+    .commands-icon {
+        width: 2;
+        height: 1;
+        margin: 0 1 0 0;
+        color: $warning;
+    }
+
+    .cmd-btn {
+        min-width: 8;
+        height: 1;
+        margin: 0 1 0 0;
+        border: none;
+        background: $warning 15%;
+        color: $warning;
+    }
+
+    .cmd-btn:hover {
+        background: $warning 30%;
+        color: $text;
+    }
+
     /* ── Modals ────────────────────────────────────────── */
 
     #terminal-panel {
@@ -2189,9 +2247,18 @@ class GitDash(App):
         self.fetch_on_startup = fetch_on_startup
         self.config = config
 
+    def _get_group_commands(self) -> list:
+        """Return custom commands for the current group."""
+        if self.config and self.group_name:
+            group = self.config.get_group(self.group_name)
+            if group:
+                return group.commands
+        return []
+
     def compose(self) -> ComposeResult:
         yield Header(show_clock=True)
         with VerticalScroll(id="main-scroll"):
+            yield CommandsSection(self._get_group_commands(), id="commands-section")
             for rp in self.repo_paths:
                 yield RepoCard(rp, classes="repo-card", id=f"card-{rp.name}")
         yield RichLog(id="git-log", wrap=True, markup=False)
@@ -2258,8 +2325,48 @@ class GitDash(App):
         except NoMatches:
             return None
 
+    def _run_custom_command(self, index: int) -> None:
+        """Run a custom command in the terminal panel."""
+        commands = self._get_group_commands()
+        if index < 0 or index >= len(commands):
+            return
+        cmd = commands[index]
+        try:
+            term = self.query_one("#terminal-panel", Terminal)
+        except NoMatches:
+            return
+        cwd = str(self.base_path)
+        if term.emulator is None:
+            term._cwd = cwd
+            term.start()
+            run_cmd = cmd.cmd
+        else:
+            # Terminal already running — cd to group root before executing
+            run_cmd = f"cd {cwd} && {cmd.cmd}"
+        term.display = True
+        term.focus()
+        # Small delay to let the terminal initialize before sending input
+        self.set_timer(0.1, lambda: self._send_terminal_command(term, run_cmd))
+        self._log_action(f"[cmd] {cmd.name}: {cmd.cmd}")
+        self._update_status_bar(f"Running: {cmd.name}")
+
+    @staticmethod
+    async def _send_terminal_command(term: Terminal, cmd_text: str) -> None:
+        """Send a command string to the terminal."""
+        if term.send_queue:
+            await term.send_queue.put(["stdin", cmd_text + "\r"])
+
     def on_button_pressed(self, event: Button.Pressed) -> None:
         bid = event.button.id or ""
+
+        # Custom commands
+        if bid.startswith("customcmd-"):
+            try:
+                index = int(bid.removeprefix("customcmd-"))
+            except ValueError:
+                return
+            self._run_custom_command(index)
+            return
 
         # Toggle collapse
         if bid.startswith("toggle-"):
@@ -2968,6 +3075,11 @@ class GitDash(App):
                     "- `J` / `K`: move repo down or up",
                     "- `S`: save repo order",
                     "",
+                    "## Custom Commands",
+                    "- Define per-group commands in `config.toml` under `[[groups.commands]]`",
+                    "- Commands appear as buttons above the repo list",
+                    "- Click a button to run the command in the terminal",
+                    "",
                     "## Focused Repo",
                     "- `a`: stage or unstage files",
                     "- `b`: switch or create branch",
@@ -3041,6 +3153,12 @@ class GitDash(App):
         self.base_path = group.path
         self.repo_paths = group.repos
         self.title = f"GitDash \u2014 {group.name}"
+        # Update custom commands section
+        try:
+            cmds_section = self.query_one("#commands-section", CommandsSection)
+            cmds_section.update_commands(group.commands)
+        except NoMatches:
+            pass
         for rp in self.repo_paths:
             await scroll.mount(RepoCard(rp, classes="repo-card", id=f"card-{rp.name}"))
         cards = list(self.query(RepoCard))
