@@ -217,10 +217,13 @@ _DEFAULT_MODELS: dict[str, str] = {
 }
 
 
-def _generate_commit_message(diff_text: str, ai_cfg: "AIConfig | None" = None) -> str | None:
-    """Generate a commit message via the configured AI provider. Returns None on failure."""
+def _generate_commit_message(diff_text: str, ai_cfg: "AIConfig | None" = None) -> tuple[str | None, str]:
+    """Generate a commit message via the configured AI provider.
+
+    Returns (message, error).  On success error is empty; on failure message is None.
+    """
     if not ai_cfg or not ai_cfg.provider or not diff_text.strip():
-        return None
+        return None, "AI not configured"
 
     api_key = ai_cfg.resolve_api_key()
     provider = ai_cfg.provider.lower()
@@ -229,12 +232,13 @@ def _generate_commit_message(diff_text: str, ai_cfg: "AIConfig | None" = None) -
     prompt = _AI_PROMPT + truncated
 
     if provider not in _DEFAULT_MODELS:
-        return None
+        return None, f"Unsupported provider: {ai_cfg.provider}"
+
+    if provider in ("anthropic", "openai") and not api_key:
+        return None, f"API key not set for {provider}"
 
     try:
         if provider == "anthropic":
-            if not api_key:
-                return None
             import anthropic
             client = anthropic.Anthropic(api_key=api_key)
             resp = client.messages.create(
@@ -242,11 +246,9 @@ def _generate_commit_message(diff_text: str, ai_cfg: "AIConfig | None" = None) -
                 max_tokens=100,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return resp.content[0].text.strip().strip('"').strip("'")
+            return resp.content[0].text.strip().strip('"').strip("'"), ""
 
         elif provider == "openai":
-            if not api_key:
-                return None
             import openai
             client = openai.OpenAI(api_key=api_key)
             resp = client.chat.completions.create(
@@ -254,7 +256,7 @@ def _generate_commit_message(diff_text: str, ai_cfg: "AIConfig | None" = None) -
                 max_tokens=100,
                 messages=[{"role": "user", "content": prompt}],
             )
-            return (resp.choices[0].message.content or "").strip().strip('"').strip("'")
+            return (resp.choices[0].message.content or "").strip().strip('"').strip("'"), ""
 
         elif provider == "ollama":
             import json
@@ -265,10 +267,10 @@ def _generate_commit_message(diff_text: str, ai_cfg: "AIConfig | None" = None) -
             req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read())
-            return (data.get("response") or "").strip().strip('"').strip("'")
+            return (data.get("response") or "").strip().strip('"').strip("'"), ""
 
-    except Exception:
-        return None
+    except Exception as e:
+        return None, str(e)
 
 
 class CommitModal(ModalScreen[str | None]):
@@ -299,17 +301,12 @@ class CommitModal(ModalScreen[str | None]):
 
     def _request_ai_message(self) -> None:
         """Generate AI commit message in a background thread."""
-        ai_cfg = self._ai_cfg
-        if ai_cfg and ai_cfg.provider.lower() not in _DEFAULT_MODELS:
-            self._set_placeholder(f"Unsupported AI provider: {ai_cfg.provider}")
-            return
-
         def _bg() -> None:
-            result = _generate_commit_message(self._diff_text, self._ai_cfg)
-            if result:
-                self.app.call_from_thread(self._apply_suggestion, result)
+            msg, err = _generate_commit_message(self._diff_text, self._ai_cfg)
+            if msg:
+                self.app.call_from_thread(self._apply_suggestion, msg)
             else:
-                self.app.call_from_thread(self._set_placeholder, "AI generation failed — enter manually")
+                self.app.call_from_thread(self._set_placeholder, f"AI failed: {err}" if err else "Enter commit message...")
 
         threading.Thread(target=_bg, daemon=True).start()
 
