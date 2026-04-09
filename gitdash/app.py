@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import signal
 import shutil
 import subprocess
 import sys
@@ -684,21 +685,26 @@ class TerminalModal(ModalScreen):
     @work(thread=True)
     def _run_command(self, cmd: str) -> None:
         try:
-            result = subprocess.run(
-                cmd, shell=True, capture_output=True, text=True,
-                cwd=str(self.cwd), timeout=30,
+            proc = subprocess.Popen(
+                cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, cwd=str(self.cwd), start_new_session=True,
             )
-            output_text = result.stdout
-            if result.stderr:
-                output_text += result.stderr
+            try:
+                stdout, stderr = proc.communicate(timeout=30)
+            except subprocess.TimeoutExpired:
+                os.killpg(proc.pid, signal.SIGTERM)
+                proc.wait(timeout=5)
+                self.app.call_from_thread(self._write_output, "[command timed out after 30s]")
+                return
+            output_text = stdout
+            if stderr:
+                output_text += stderr
             if output_text.strip():
                 self.app.call_from_thread(self._write_output, output_text.rstrip("\n"))
-            if result.returncode != 0:
+            if proc.returncode != 0:
                 self.app.call_from_thread(
-                    self._write_output, f"[exit code: {result.returncode}]"
+                    self._write_output, f"[exit code: {proc.returncode}]"
                 )
-        except subprocess.TimeoutExpired:
-            self.app.call_from_thread(self._write_output, "[command timed out after 30s]")
         except Exception as e:
             self.app.call_from_thread(self._write_output, f"[error: {e}]")
 
@@ -710,7 +716,10 @@ class TerminalModal(ModalScreen):
             pass
 
     def on_key(self, event) -> None:
-        inp = self.query_one("#terminal-input", Input)
+        try:
+            inp = self.query_one("#terminal-input", Input)
+        except NoMatches:
+            return
         if not inp.has_focus:
             return
         if event.key == "up" and self._history:
