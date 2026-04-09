@@ -22,6 +22,10 @@ Like the VS Code/Cursor git sidebar, but in your terminal — no editor needed.
 - Git operations log for debugging (`!` key)
 - Built-in help overlay with keybindings and status cues (`?` key)
 - Group switcher to jump between repo sets on the fly
+- In-app group editor to add, remove, reorder, and configure groups
+- In-app terminal panel scoped to the focused repo directory
+- Undo last commit (soft reset, only before push)
+- Create pull requests with AI-generated title and description (requires `gh` CLI)
 - Auto-refresh every 60 seconds
 - Fetch on startup (configurable)
 - AI-generated commit messages (BYOK: Claude, OpenAI, or Ollama)
@@ -156,11 +160,15 @@ If no `[ai]` section is present, the feature is silently disabled — everything
 | `d` | Per-file diff viewer |
 | `e` | Open repo in editor |
 | `l` | Commit log viewer |
+| `p` | Create pull request (pushes branch, AI-generated title/description) |
 | `s` | Stash manager (push, pop, apply, drop) |
+| `t` | Toggle inline terminal (runs in focused repo dir) |
+| `u` | Undo last commit (before push) |
 | `x` | Revert all changes in repo |
 | `/` | Search across all repos |
 | `!` | Toggle git operations log |
 | `g` | Switch repo group |
+| `G` (Shift+G) | Edit groups (add, remove, reorder, set paths) |
 | `?` | Show help |
 | `J` (Shift+J) | Move repo down |
 | `K` (Shift+K) | Move repo up |
