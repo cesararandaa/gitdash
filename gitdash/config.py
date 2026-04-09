@@ -22,10 +22,17 @@ CONFIG_FILE = CONFIG_DIR / "config.toml"
 
 
 @dataclass
+class CustomCommand:
+    name: str
+    cmd: str
+
+
+@dataclass
 class RepoGroup:
     name: str
     path: Path
     repos: list[Path] = field(default_factory=list)
+    commands: list[CustomCommand] = field(default_factory=list)
 
 
 @dataclass
@@ -109,7 +116,13 @@ def load_config() -> Config:
             # Auto-discover repos in path
             repos = _discover_repos(path)
 
-        config.groups.append(RepoGroup(name=name, path=path, repos=repos))
+        commands = [
+            CustomCommand(name=c.get("name", ""), cmd=c.get("cmd", ""))
+            for c in group_data.get("commands", [])
+            if c.get("name") and c.get("cmd")
+        ]
+
+        config.groups.append(RepoGroup(name=name, path=path, repos=repos, commands=commands))
 
     return config
 
@@ -136,6 +149,15 @@ def init_config() -> Path:
 name = "work"
 path = "~/code"
 # repos = ["repo1", "repo2"]  # optional: omit to auto-discover all repos in path
+
+# Custom commands: one-click shortcuts that run in the terminal
+# [[groups.commands]]
+# name = "Run tests"
+# cmd = "npm test"
+#
+# [[groups.commands]]
+# name = "Deploy"
+# cmd = "git push heroku main"
 
 # [[groups]]
 # name = "personal"
@@ -205,6 +227,11 @@ def save_all_groups(config: "Config") -> None:
             repos_value = "[" + ", ".join(_toml_str(rp.name) for rp in g.repos) + "]"
             lines.append(f"repos = {repos_value}\n")
         lines.append("\n")
+        for cmd in g.commands:
+            lines.append("[[groups.commands]]\n")
+            lines.append(f"name = {_toml_str(cmd.name)}\n")
+            lines.append(f"cmd = {_toml_str(cmd.cmd)}\n")
+            lines.append("\n")
 
     _atomic_write(CONFIG_FILE, "".join(lines))
 
