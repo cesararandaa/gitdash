@@ -2402,7 +2402,11 @@ class GitDash(App):
         """Undo the last commit (soft reset), only if it hasn't been pushed."""
         name = card.repo_path.name
         ahead = card.status.get("ahead", 0)
-        if not ahead:
+        tracking = card.status.get("tracking")
+        if not tracking and not ahead:
+            # No upstream — commits are local-only, safe to undo
+            pass
+        elif not ahead:
             self._update_status_bar(f"No unpushed commits to undo in {name}")
             return
 
@@ -2416,6 +2420,13 @@ class GitDash(App):
 
         def on_confirm(confirmed: bool) -> None:
             if not confirmed:
+                return
+            # Re-check ahead count with fresh status to avoid undoing pushed commits
+            fresh = card._read_status()
+            fresh_tracking = fresh.get("tracking")
+            fresh_ahead = fresh.get("ahead", 0)
+            if fresh_tracking and not fresh_ahead:
+                self._update_status_bar(f"Commits already pushed; undo cancelled for {name}")
                 return
             try:
                 self._log_action(f"[{name}] git reset --soft HEAD~1")
