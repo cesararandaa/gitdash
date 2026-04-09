@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -30,6 +31,7 @@ from textual.widgets import (
     Markdown,
     RichLog,
     Static,
+    TextArea,
     Tree,
 )
 
@@ -272,6 +274,172 @@ def _generate_commit_message(diff_text: str, ai_cfg: "AIConfig | None" = None) -
         return None, str(e)
 
 
+_AI_PR_PROMPT = (
+    "Generate a pull request title and description for the following commits and diffs.\n"
+    "The title should be concise (max 72 chars) and in imperative mood.\n"
+    "The description should be a short markdown summary with bullet points.\n"
+    "Reply in EXACTLY this format, with no extra text:\n"
+    "TITLE: <title here>\n"
+    "DESCRIPTION:\n"
+    "<description here>\n\n"
+)
+
+
+def _generate_pr_info(log_and_diff: str, ai_cfg: "AIConfig | None" = None) -> tuple[str | None, str | None, str]:
+    """Generate PR title and description via the configured AI provider.
+
+    Returns (title, description, error).  On success error is empty.
+    """
+    if not ai_cfg or not ai_cfg.provider or not log_and_diff.strip():
+        return None, None, "AI not configured"
+
+    api_key = ai_cfg.resolve_api_key()
+    provider = ai_cfg.provider.lower()
+    model = ai_cfg.model or _DEFAULT_MODELS.get(provider, "")
+    truncated = log_and_diff[:12000]
+    prompt = _AI_PR_PROMPT + truncated
+
+    if provider not in _DEFAULT_MODELS:
+        return None, None, f"Unsupported provider: {ai_cfg.provider}"
+
+    if provider in ("anthropic", "openai") and not api_key:
+        return None, None, f"API key not set for {provider}"
+
+    try:
+        raw = ""
+        if provider == "anthropic":
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            resp = client.messages.create(
+                model=model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = resp.content[0].text.strip()
+
+        elif provider == "openai":
+            import openai
+            client = openai.OpenAI(api_key=api_key)
+            resp = client.chat.completions.create(
+                model=model,
+                max_tokens=500,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = (resp.choices[0].message.content or "").strip()
+
+        elif provider == "ollama":
+            import json
+            import urllib.request
+            base = ai_cfg.base_url or "http://localhost:11434"
+            url = f"{base}/api/generate"
+            payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode()
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read())
+            raw = (data.get("response") or "").strip()
+
+        # Parse TITLE: / DESCRIPTION: format
+        title, desc = None, None
+        if "TITLE:" in raw:
+            lines = raw.split("\n")
+            title_line = next((l for l in lines if l.startswith("TITLE:")), "")
+            title = title_line.replace("TITLE:", "").strip().strip('"').strip("'")
+            if "DESCRIPTION:" in raw:
+                desc = raw.split("DESCRIPTION:", 1)[1].strip()
+            else:
+                remaining = "\n".join(l for l in lines if not l.startswith("TITLE:"))
+                desc = remaining.strip() or None
+        else:
+            # Fallback: first line is title, rest is description
+            lines = raw.split("\n", 1)
+            title = lines[0].strip().strip('"').strip("'")
+            if len(lines) > 1:
+                desc = lines[1].strip()
+        return title, desc, ""
+
+    except Exception as e:
+        return None, None, str(e)
+
+
+class CreatePRModal(ModalScreen[tuple[str, str] | None]):
+    """Modal to create a pull request with title and description."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, branch: str, base_branch: str, log_and_diff: str = "", ai_cfg: "AIConfig | None" = None) -> None:
+        super().__init__()
+        self._branch = branch
+        self._base_branch = base_branch
+        self._log_and_diff = log_and_diff
+        self._ai_cfg = ai_cfg
+
+    def compose(self) -> ComposeResult:
+        ai_ready = self._log_and_diff and self._ai_cfg and self._ai_cfg.provider
+        title_placeholder = "Generating title..." if ai_ready else "PR title..."
+        with Vertical(id="pr-dialog"):
+            yield Label(f"\u2387 Create Pull Request", id="commit-title")
+            yield Label(f"{self._branch} \u2192 {self._base_branch}", id="pr-branch-info")
+            yield Input(placeholder=title_placeholder, id="pr-title-input")
+            yield Label("Description:", id="pr-desc-label")
+            yield TextArea(id="pr-desc-input")
+            with Horizontal(id="commit-buttons"):
+                yield Button("\u2713 Create PR", variant="success", id="btn-create-pr")
+                yield Button("\u2717 Cancel", variant="error", id="btn-cancel")
+
+    def on_mount(self) -> None:
+        inp = self.query_one("#pr-title-input", Input)
+        inp.focus()
+        if self._log_and_diff and self._ai_cfg and self._ai_cfg.provider:
+            self._request_ai_pr()
+
+    def _request_ai_pr(self) -> None:
+        """Generate AI PR title and description in a background thread."""
+        def _bg() -> None:
+            title, desc, err = _generate_pr_info(self._log_and_diff, self._ai_cfg)
+            if title:
+                self.app.call_from_thread(self._apply_suggestion, title, desc or "")
+            else:
+                self.app.call_from_thread(self._set_placeholder, f"AI failed: {err}" if err else "PR title...")
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _apply_suggestion(self, title: str, desc: str) -> None:
+        try:
+            inp = self.query_one("#pr-title-input", Input)
+        except Exception:
+            return
+        if not inp.value:
+            inp.value = title
+            inp.placeholder = "PR title..."
+        try:
+            ta = self.query_one("#pr-desc-input", TextArea)
+        except Exception:
+            return
+        if not ta.text:
+            ta.load_text(desc)
+
+    def _set_placeholder(self, text: str = "PR title...") -> None:
+        try:
+            inp = self.query_one("#pr-title-input", Input)
+        except Exception:
+            return
+        inp.placeholder = text
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "btn-create-pr":
+            title = self.query_one("#pr-title-input", Input).value.strip()
+            desc = self.query_one("#pr-desc-input", TextArea).text.strip()
+            if title:
+                self.dismiss((title, desc))
+            else:
+                self.query_one("#pr-title-input", Input).focus()
+        else:
+            self.dismiss(None)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class CommitModal(ModalScreen[str | None]):
     """Modal to enter a commit message."""
 
@@ -373,6 +541,7 @@ class ShortcutBar(Vertical):
         ("d", "diff"),
         ("e", "edit"),
         ("l", "log"),
+        ("p", "PR"),
         ("s", "stash"),
         ("x", "discard"),
     ]
@@ -1276,6 +1445,7 @@ class RepoCard(Vertical, can_focus=True):
         Binding("d", "diff", "Diff", show=True),
         Binding("e", "open_editor", "Edit", show=True),
         Binding("l", "log", "Log", show=True),
+        Binding("p", "create_pr", "Create PR", show=True),
         Binding("s", "stash", "Stash", show=True),
         Binding("u", "undo_commit", "Undo commit", show=True),
         Binding("x", "revert", "Revert", show=True),
@@ -1307,6 +1477,7 @@ class RepoCard(Vertical, can_focus=True):
                 yield Button("\u2713 Commit", id=f"cmt-{self.repo_path.name}", classes="action-btn accent")
                 yield Button("\u21a9 Undo", id=f"undo-{self.repo_path.name}", classes="action-btn")
                 yield Button("\u00b1 Diff", id=f"diff-{self.repo_path.name}", classes="action-btn diff-btn")
+                yield Button("\u2387 PR", id=f"pr-{self.repo_path.name}", classes="action-btn pr-btn")
 
     def on_mount(self) -> None:
         self._initial_refresh()
@@ -1498,6 +1669,9 @@ class RepoCard(Vertical, can_focus=True):
 
     def action_undo_commit(self) -> None:
         self.app._do_undo_commit(self)
+
+    def action_create_pr(self) -> None:
+        self.app._do_create_pr(self)
 
     def action_revert(self) -> None:
         self.app._do_revert(self)
@@ -1730,6 +1904,15 @@ class GitDash(App):
         background: $boost;
     }
 
+    .action-btn.pr-btn {
+        background: $panel;
+        color: $primary;
+    }
+
+    .action-btn.pr-btn:hover {
+        background: $boost;
+    }
+
     .sync-btn {
         width: 100%;
         height: auto;
@@ -1743,6 +1926,34 @@ class GitDash(App):
         display: none;
         border-top: solid $accent;
         background: $surface;
+    }
+
+    #pr-dialog {
+        width: 80;
+        height: auto;
+        max-height: 80%;
+        border: thick $primary;
+        background: $surface;
+        padding: 1 2;
+        margin: 2 4;
+    }
+
+    #pr-branch-info {
+        color: $text-muted;
+        margin-bottom: 1;
+        width: 100%;
+        text-align: center;
+    }
+
+    #pr-desc-label {
+        color: $text-muted;
+        margin-top: 1;
+    }
+
+    #pr-desc-input {
+        height: 10;
+        border: solid $primary-background;
+        margin: 0 0 1 0;
     }
 
     #commit-dialog, #branch-dialog, #diff-dialog {
@@ -2076,6 +2287,8 @@ class GitDash(App):
             self._do_undo_commit(card)
         elif bid.startswith("diff-"):
             self._do_diff(card)
+        elif bid.startswith("pr-"):
+            self._do_create_pr(card)
 
     # -- Git actions --
 
@@ -2448,6 +2661,89 @@ class GitDash(App):
             on_confirm,
         )
 
+    @work(thread=True)
+    def _do_create_pr(self, card: RepoCard) -> None:
+        """Create a pull request for the current branch using gh CLI."""
+        name = card.repo_path.name
+        branch = card.status.get("branch", "")
+        tracking = card.status.get("tracking")
+
+        if not branch:
+            self._update_status_bar_from_thread(f"No branch info for {name}")
+            return
+
+        # Determine the base branch (default remote branch)
+        try:
+            result = subprocess.run(
+                ["gh", "repo", "view", "--json", "defaultBranchRef", "-q", ".defaultBranchRef.name"],
+                capture_output=True, text=True, cwd=str(card.repo_path), timeout=10,
+            )
+            base_branch = result.stdout.strip() or "main"
+        except Exception:
+            base_branch = "main"
+
+        if branch == base_branch:
+            self._update_status_bar_from_thread(f"Already on {base_branch} — switch to a feature branch first")
+            return
+
+        # Gather commit log and diff for AI context
+        log_and_diff = ""
+        try:
+            log_and_diff = card.repo.git.log(f"{base_branch}..HEAD", "--pretty=format:%s%n%b", "--no-merges")
+            diff = card.repo.git.diff(f"{base_branch}...HEAD", "--stat")
+            detailed_diff = card.repo.git.diff(f"{base_branch}...HEAD")
+            log_and_diff += "\n\n--- Diff stat ---\n" + diff
+            log_and_diff += "\n\n--- Diff ---\n" + detailed_diff
+        except GitCommandError:
+            pass
+
+        # Push branch if needed
+        if not tracking:
+            try:
+                self._log_action_from_thread(f"[{name}] git push -u origin {branch}")
+                card.repo.git.push("-u", "origin", branch)
+                self._log_action_from_thread(f"[{name}] push OK")
+                self._refresh_card_from_thread(card)
+            except GitCommandError as e:
+                self._log_action_from_thread(f"[{name}] ERROR push: {e}")
+                self._update_status_bar_from_thread(f"Push failed for {name}: {e}")
+                return
+
+        def on_pr_result(result: tuple[str, str] | None) -> None:
+            if result is None:
+                return
+            title, body = result
+            self._create_pr_in_background(card, title, body, base_branch)
+
+        ai_cfg = self.config.ai if self.config else None
+        self.call_from_thread(
+            self.push_screen,
+            CreatePRModal(branch, base_branch, log_and_diff, ai_cfg),
+            on_pr_result,
+        )
+
+    @work(thread=True)
+    def _create_pr_in_background(self, card: RepoCard, title: str, body: str, base_branch: str) -> None:
+        """Run gh pr create in a background thread."""
+        name = card.repo_path.name
+        self._log_action_from_thread(f"[{name}] gh pr create --title '{title}' --base {base_branch}")
+        try:
+            cmd = ["gh", "pr", "create", "--title", title, "--body", body, "--base", base_branch]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, cwd=str(card.repo_path), timeout=30,
+            )
+            if result.returncode == 0:
+                pr_url = result.stdout.strip()
+                self._log_action_from_thread(f"[{name}] PR created: {pr_url}")
+                self._update_status_bar_from_thread(f"PR created for {name}: {pr_url}")
+            else:
+                err = result.stderr.strip() or result.stdout.strip()
+                self._log_action_from_thread(f"[{name}] ERROR pr create: {err}")
+                self._update_status_bar_from_thread(f"PR creation failed: {err}")
+        except Exception as e:
+            self._log_action_from_thread(f"[{name}] ERROR pr create: {e}")
+            self._update_status_bar_from_thread(f"PR creation failed: {e}")
+
     def _do_diff(self, card: RepoCard, single_file: tuple[str, str] | None = None) -> None:
         if single_file:
             # Show diff for a single file directly
@@ -2679,6 +2975,7 @@ class GitDash(App):
                     "- `d`: inspect file diffs",
                     "- `e`: open repo or file in editor",
                     "- `l`: view commit log and patch",
+                    "- `p`: create pull request (pushes branch, uses AI for title/description)",
                     "- `s`: manage stashes",
                     "- `u`: undo last commit (before push)",
                     "- `x`: discard local changes",
