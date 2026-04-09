@@ -228,6 +228,9 @@ def _generate_commit_message(diff_text: str, ai_cfg: "AIConfig | None" = None) -
     truncated = diff_text[:8000]
     prompt = _AI_PROMPT + truncated
 
+    if provider not in _DEFAULT_MODELS:
+        return None
+
     try:
         if provider == "anthropic":
             if not api_key:
@@ -266,7 +269,6 @@ def _generate_commit_message(diff_text: str, ai_cfg: "AIConfig | None" = None) -
 
     except Exception:
         return None
-    return None
 
 
 class CommitModal(ModalScreen[str | None]):
@@ -297,24 +299,35 @@ class CommitModal(ModalScreen[str | None]):
 
     def _request_ai_message(self) -> None:
         """Generate AI commit message in a background thread."""
+        ai_cfg = self._ai_cfg
+        if ai_cfg and ai_cfg.provider.lower() not in _DEFAULT_MODELS:
+            self._set_placeholder(f"Unsupported AI provider: {ai_cfg.provider}")
+            return
+
         def _bg() -> None:
             result = _generate_commit_message(self._diff_text, self._ai_cfg)
             if result:
                 self.app.call_from_thread(self._apply_suggestion, result)
             else:
-                self.app.call_from_thread(self._clear_placeholder)
+                self.app.call_from_thread(self._set_placeholder, "AI generation failed — enter manually")
 
         threading.Thread(target=_bg, daemon=True).start()
 
     def _apply_suggestion(self, msg: str) -> None:
-        inp = self.query_one("#commit-input", Input)
+        try:
+            inp = self.query_one("#commit-input", Input)
+        except Exception:
+            return
         if not inp.value:
             inp.value = msg
             inp.placeholder = "Enter commit message..."
 
-    def _clear_placeholder(self) -> None:
-        inp = self.query_one("#commit-input", Input)
-        inp.placeholder = "Enter commit message..."
+    def _set_placeholder(self, text: str = "Enter commit message...") -> None:
+        try:
+            inp = self.query_one("#commit-input", Input)
+        except Exception:
+            return
+        inp.placeholder = text
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-commit":
