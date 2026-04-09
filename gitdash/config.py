@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 import sys
+import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -112,6 +114,22 @@ path = "~/code"
     return CONFIG_FILE
 
 
+def _atomic_write(path: Path, content: str) -> None:
+    """Write content to a file atomically via temp-file + rename."""
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", dir=path.parent, suffix=".tmp", delete=False
+        ) as tmp:
+            tmp_path = tmp.name
+            tmp.write(content)
+        os.replace(tmp_path, path)
+    except BaseException:
+        if tmp_path and Path(tmp_path).exists():
+            os.unlink(tmp_path)
+        raise
+
+
 def _toml_str(value: str) -> str:
     """Return a TOML-safe double-quoted string."""
     return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
@@ -146,7 +164,7 @@ def save_all_groups(config: "Config") -> None:
             lines.append(f"repos = {repos_value}\n")
         lines.append("\n")
 
-    CONFIG_FILE.write_text("".join(lines))
+    _atomic_write(CONFIG_FILE, "".join(lines))
 
 
 def save_repo_order(group_name: str, repo_paths: list[Path]) -> None:
@@ -213,4 +231,4 @@ def save_repo_order(group_name: str, repo_paths: list[Path]) -> None:
     if not found:
         raise ValueError(f"Group '{group_name}' not found in config")
 
-    CONFIG_FILE.write_text("".join(result))
+    _atomic_write(CONFIG_FILE, "".join(result))

@@ -464,9 +464,12 @@ class MarkdownModal(ModalScreen):
         if event.button.id == "btn-edit-md" and self.file_repo_path:
             editor = self.app._get_editor()
             if editor:
-                target = str(self.file_repo_path / self.title_text)
+                target = (self.file_repo_path / self.title_text).resolve()
+                repo_root = self.file_repo_path.resolve()
+                if not str(target).startswith(str(repo_root) + os.sep) and target != repo_root:
+                    return
                 try:
-                    subprocess.Popen([editor, target])
+                    subprocess.Popen([editor, str(target)])
                 except FileNotFoundError:
                     pass
             return
@@ -716,7 +719,10 @@ class SearchModal(ModalScreen):
             filepath = parts[0]
             try:
                 linenum = int(parts[1])
-                full_path = Path(working_dir) / filepath
+                full_path = (Path(working_dir) / filepath).resolve()
+                repo_root = Path(working_dir).resolve()
+                if not str(full_path).startswith(str(repo_root) + os.sep):
+                    return
                 if full_path.exists() and full_path.is_file():
                     content = full_path.read_text(errors="replace").splitlines()
                     start = max(0, linenum - 5)
@@ -742,7 +748,10 @@ class SearchModal(ModalScreen):
             parts = line.split(":", 2)
             if parts:
                 filepath = parts[0]
-                self.app._do_open_editor_path(str(Path(working_dir) / filepath))
+                full_path = (Path(working_dir) / filepath).resolve()
+                repo_root = Path(working_dir).resolve()
+                if str(full_path).startswith(str(repo_root) + os.sep):
+                    self.app._do_open_editor_path(str(full_path))
             return
         self.app.pop_screen()
 
@@ -1112,7 +1121,13 @@ class FileDiffModal(ModalScreen):
                 self.repo.git.checkout("--", filepath)
             elif cat == "untracked":
                 p = Path(self.repo.working_dir) / filepath
-                if p.is_dir():
+                resolved = p.resolve()
+                repo_root = Path(self.repo.working_dir).resolve()
+                if not str(resolved).startswith(str(repo_root) + os.sep):
+                    return
+                if p.is_symlink():
+                    p.unlink(missing_ok=True)
+                elif p.is_dir():
                     shutil.rmtree(p, ignore_errors=True)
                 else:
                     p.unlink(missing_ok=True)
@@ -2105,6 +2120,9 @@ class GitDash(App):
         editor = self._get_editor()
         if not editor:
             self._update_status_bar("No editor configured. Set 'editor' in config.toml or $EDITOR")
+            return
+        if not shutil.which(editor):
+            self._update_status_bar(f"Editor '{editor}' not found on PATH")
             return
         try:
             subprocess.Popen([editor, full_path])
