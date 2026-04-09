@@ -644,50 +644,58 @@ class LogModal(ModalScreen):
         self.app.pop_screen()
 
 
-class TerminalModal(ModalScreen):
-    """Modal providing an interactive shell in the repo directory."""
+class TerminalPanel(Vertical):
+    """Inline bottom panel providing a shell in the focused repo's directory."""
 
-    BINDINGS = [Binding("escape", "close", "Close")]
-
-    def __init__(self, cwd: Path) -> None:
-        super().__init__()
-        self.cwd = cwd
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._cwd: Path | None = None
         self._history: list[str] = []
         self._history_idx = 0
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="terminal-dialog"):
-            yield Label(f"Terminal — {self.cwd.name}", id="terminal-title")
-            yield RichLog(id="terminal-output", wrap=True, markup=False)
-            yield Input(placeholder="$ enter command...", id="terminal-input")
-            with Horizontal(id="terminal-buttons"):
-                yield Button("Clear", variant="warning", id="btn-term-clear")
-                yield Button("Close", variant="primary", id="btn-term-close")
+        yield Static("Terminal", id="terminal-title")
+        yield RichLog(id="terminal-output", wrap=True, markup=False)
+        yield Input(placeholder="$ enter command...", id="terminal-input")
 
-    def on_mount(self) -> None:
-        output = self.query_one("#terminal-output", RichLog)
-        output.write(f"Working directory: {self.cwd}")
-        output.write("Type commands and press Enter. Press Escape to close.\n")
-        self.query_one("#terminal-input", Input).focus()
+    def set_cwd(self, cwd: Path) -> None:
+        if cwd == self._cwd:
+            return
+        self._cwd = cwd
+        try:
+            self.query_one("#terminal-title", Static).update(f"Terminal — {cwd.name}")
+            output = self.query_one("#terminal-output", RichLog)
+            output.clear()
+            output.write(f"Working directory: {cwd}\n")
+        except NoMatches:
+            pass
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         cmd = event.value.strip()
         if not cmd:
             return
-        inp = self.query_one("#terminal-input", Input)
+        if self._cwd is None:
+            return
+        try:
+            inp = self.query_one("#terminal-input", Input)
+        except NoMatches:
+            return
         inp.value = ""
         self._history.append(cmd)
         self._history_idx = len(self._history)
-        output = self.query_one("#terminal-output", RichLog)
-        output.write(f"$ {cmd}")
+        try:
+            self.query_one("#terminal-output", RichLog).write(f"$ {cmd}")
+        except NoMatches:
+            pass
         self._run_command(cmd)
+        event.stop()
 
     @work(thread=True)
     def _run_command(self, cmd: str) -> None:
         try:
             proc = subprocess.Popen(
                 cmd, shell=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, cwd=str(self.cwd), start_new_session=True,
+                text=True, cwd=str(self._cwd), start_new_session=True,
             )
             try:
                 stdout, stderr = proc.communicate(timeout=30)
@@ -710,8 +718,7 @@ class TerminalModal(ModalScreen):
 
     def _write_output(self, text: str) -> None:
         try:
-            output = self.query_one("#terminal-output", RichLog)
-            output.write(text)
+            self.query_one("#terminal-output", RichLog).write(text)
         except NoMatches:
             pass
 
@@ -737,19 +744,10 @@ class TerminalModal(ModalScreen):
             inp.cursor_position = len(inp.value)
             event.prevent_default()
             event.stop()
-
-    def on_button_pressed(self, event: Button.Pressed) -> None:
-        if event.button.id == "btn-term-clear":
-            try:
-                self.query_one("#terminal-output", RichLog).clear()
-            except NoMatches:
-                pass
-            return
-        if event.button.id == "btn-term-close":
-            self.app.pop_screen()
-
-    def action_close(self) -> None:
-        self.app.pop_screen()
+        elif event.key == "escape":
+            self.app.action_toggle_terminal()
+            event.prevent_default()
+            event.stop()
 
 
 class StageModal(ModalScreen):
@@ -1843,37 +1841,31 @@ class GitDash(App):
 
     /* ── Modals ────────────────────────────────────────── */
 
-    #terminal-dialog {
-        width: 100;
-        height: 85%;
-        border: thick $primary;
+    #terminal-panel {
+        dock: bottom;
+        height: 16;
+        display: none;
+        border-top: solid $accent;
         background: $surface;
-        padding: 1 2;
-        margin: 2 4;
+        padding: 0 1;
     }
 
     #terminal-title {
+        height: 1;
         text-style: bold;
-        margin-bottom: 1;
-        width: 100%;
-        text-align: center;
-        color: $text;
+        color: $accent;
+        padding: 0 1;
     }
 
     #terminal-output {
         height: 1fr;
-        border: solid $primary-background;
-        margin: 1 0;
         background: #1a1a2e;
+        margin: 0;
+        padding: 0 1;
     }
 
     #terminal-input {
-        margin: 0 0 1 0;
-    }
-
-    #terminal-buttons {
-        height: 3;
-        align: center middle;
+        margin: 0;
     }
 
     #commit-dialog, #branch-dialog, #diff-dialog {
