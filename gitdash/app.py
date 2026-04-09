@@ -10,6 +10,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 
+import threading
+
 from git import Repo, GitCommandError, InvalidGitRepositoryError
 from rich.text import Text
 from textual import work
@@ -203,21 +205,116 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
+_AI_PROMPT = (
+    "Generate a concise git commit message (one line, max 72 chars, imperative mood) "
+    "for this diff. Reply with ONLY the commit message, nothing else.\n\n"
+)
+
+_DEFAULT_MODELS: dict[str, str] = {
+    "anthropic": "claude-sonnet-4-20250514",
+    "openai": "gpt-4o-mini",
+    "ollama": "llama3",
+}
+
+
+def _generate_commit_message(diff_text: str, ai_cfg: "AIConfig | None" = None) -> str | None:
+    """Generate a commit message via the configured AI provider. Returns None on failure."""
+    if not ai_cfg or not ai_cfg.provider or not diff_text.strip():
+        return None
+
+    api_key = ai_cfg.resolve_api_key()
+    provider = ai_cfg.provider.lower()
+    model = ai_cfg.model or _DEFAULT_MODELS.get(provider, "")
+    truncated = diff_text[:8000]
+    prompt = _AI_PROMPT + truncated
+
+    try:
+        if provider == "anthropic":
+            if not api_key:
+                return None
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            resp = client.messages.create(
+                model=model,
+                max_tokens=100,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return resp.content[0].text.strip().strip('"').strip("'")
+
+        elif provider == "openai":
+            if not api_key:
+                return None
+            import openai
+            client = openai.OpenAI(api_key=api_key)
+            resp = client.chat.completions.create(
+                model=model,
+                max_tokens=100,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return (resp.choices[0].message.content or "").strip().strip('"').strip("'")
+
+        elif provider == "ollama":
+            import json
+            import urllib.request
+            base = ai_cfg.base_url or "http://localhost:11434"
+            url = f"{base}/api/generate"
+            payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode()
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+            return (data.get("response") or "").strip().strip('"').strip("'")
+
+    except Exception:
+        return None
+    return None
+
+
 class CommitModal(ModalScreen[str | None]):
     """Modal to enter a commit message."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
+    def __init__(self, diff_text: str = "", ai_cfg: "AIConfig | None" = None) -> None:
+        super().__init__()
+        self._diff_text = diff_text
+        self._ai_cfg = ai_cfg
+
     def compose(self) -> ComposeResult:
         with Vertical(id="commit-dialog"):
             yield Label("\u270e Commit Message", id="commit-title")
-            yield Input(placeholder="Enter commit message...", id="commit-input")
+            ai_ready = self._diff_text and self._ai_cfg and self._ai_cfg.provider
+            placeholder = "Generating commit message..." if ai_ready else "Enter commit message..."
+            yield Input(placeholder=placeholder, id="commit-input")
             with Horizontal(id="commit-buttons"):
                 yield Button("\u2713 Commit", variant="success", id="btn-commit")
                 yield Button("\u2717 Cancel", variant="error", id="btn-cancel")
 
     def on_mount(self) -> None:
-        self.query_one("#commit-input", Input).focus()
+        inp = self.query_one("#commit-input", Input)
+        inp.focus()
+        if self._diff_text and self._ai_cfg and self._ai_cfg.provider:
+            self._request_ai_message()
+
+    def _request_ai_message(self) -> None:
+        """Generate AI commit message in a background thread."""
+        def _bg() -> None:
+            result = _generate_commit_message(self._diff_text, self._ai_cfg)
+            if result:
+                self.app.call_from_thread(self._apply_suggestion, result)
+            else:
+                self.app.call_from_thread(self._clear_placeholder)
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _apply_suggestion(self, msg: str) -> None:
+        inp = self.query_one("#commit-input", Input)
+        if not inp.value:
+            inp.value = msg
+            inp.placeholder = "Enter commit message..."
+
+    def _clear_placeholder(self) -> None:
+        inp = self.query_one("#commit-input", Input)
+        inp.placeholder = "Enter commit message..."
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-commit":
@@ -2208,6 +2305,20 @@ class GitDash(App):
             self._update_status_bar(f"Nothing to commit in {card.repo_path.name}")
             return
 
+        # Gather diff for AI commit message generation
+        diff_text = ""
+        try:
+            if has_staged:
+                diff_text = card.repo.git.diff("--cached")
+            else:
+                diff_text = card.repo.git.diff()
+                # Include untracked file names
+                untracked = card.status.get("untracked", [])
+                if untracked:
+                    diff_text += "\n\nNew untracked files:\n" + "\n".join(untracked)
+        except GitCommandError:
+            pass
+
         def on_message(msg: str | None) -> None:
             if msg is None:
                 return
@@ -2225,7 +2336,8 @@ class GitDash(App):
                 self._log_action(f"[{card.repo_path.name}] ERROR commit: {e}")
                 self._update_status_bar(f"Commit failed: {e}")
 
-        self.push_screen(CommitModal(), on_message)
+        ai_cfg = self.config.ai if self.config else None
+        self.push_screen(CommitModal(diff_text=diff_text, ai_cfg=ai_cfg), on_message)
 
     def _do_diff(self, card: RepoCard, single_file: tuple[str, str] | None = None) -> None:
         if single_file:

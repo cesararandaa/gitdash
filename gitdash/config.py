@@ -29,11 +29,26 @@ class RepoGroup:
 
 
 @dataclass
+class AIConfig:
+    provider: str = ""  # "anthropic", "openai", "ollama"
+    model: str = ""     # optional override; defaults chosen per provider
+    api_key: str = ""   # "env:VAR_NAME" or raw key
+    base_url: str = ""  # custom endpoint (required for ollama)
+
+    def resolve_api_key(self) -> str:
+        """Resolve the API key, dereferencing env: prefix if present."""
+        if self.api_key.startswith("env:"):
+            return os.environ.get(self.api_key[4:], "")
+        return self.api_key
+
+
+@dataclass
 class Config:
     groups: list[RepoGroup] = field(default_factory=list)
     default_group: str | None = None
     fetch_on_startup: bool = False
     editor: str | None = None
+    ai: AIConfig = field(default_factory=AIConfig)
 
     @property
     def all_repos(self) -> list[Path]:
@@ -73,6 +88,15 @@ def load_config() -> Config:
     config.fetch_on_startup = data.get("fetch_on_startup", False)
     config.editor = data.get("editor")
 
+    ai_data = data.get("ai", {})
+    if ai_data:
+        config.ai = AIConfig(
+            provider=ai_data.get("provider", ""),
+            model=ai_data.get("model", ""),
+            api_key=ai_data.get("api_key", ""),
+            base_url=ai_data.get("base_url", ""),
+        )
+
     for group_data in data.get("groups", []):
         name = group_data.get("name", "unnamed")
         path = Path(group_data.get("path", ".")).expanduser()
@@ -100,6 +124,13 @@ def init_config() -> Path:
     default = """\
 # GitDash configuration
 # default_group = "work"
+
+# AI commit message generation (BYOK)
+# [ai]
+# provider = "anthropic"              # "anthropic", "openai", or "ollama"
+# model = "claude-sonnet-4-20250514"  # optional: defaults per provider
+# api_key = "env:ANTHROPIC_API_KEY"   # "env:VAR_NAME" (recommended) or raw key
+# base_url = ""                       # optional: custom endpoint (e.g. for ollama)
 
 [[groups]]
 name = "work"
@@ -149,6 +180,17 @@ def save_all_groups(config: "Config") -> None:
         lines.append(f"editor = {_toml_str(config.editor)}\n")
 
     if lines:
+        lines.append("\n")
+
+    if config.ai.provider:
+        lines.append("[ai]\n")
+        lines.append(f"provider = {_toml_str(config.ai.provider)}\n")
+        if config.ai.model:
+            lines.append(f"model = {_toml_str(config.ai.model)}\n")
+        if config.ai.api_key:
+            lines.append(f"api_key = {_toml_str(config.ai.api_key)}\n")
+        if config.ai.base_url:
+            lines.append(f"base_url = {_toml_str(config.ai.base_url)}\n")
         lines.append("\n")
 
     for g in config.groups:
