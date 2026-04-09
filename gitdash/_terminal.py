@@ -98,6 +98,9 @@ class Terminal(Widget, can_focus=True, inherit_bindings=False):
             "pageup": "\x1b[5~",
             "pagedown": "\x1b[6~",
             "shift+tab": "\x1b[Z",
+            "tab": "\t",
+            "enter": "\r",
+            "backspace": "\x7f",
             "f1": "\x1bOP",
             "f2": "\x1bOQ",
             "f3": "\x1bOR",
@@ -110,6 +113,25 @@ class Terminal(Widget, can_focus=True, inherit_bindings=False):
             "f10": "\x1b[21~",
             "f11": "\x1b[23~",
             "f12": "\x1b[24~",
+            # Ctrl key combos (character is None for these in Textual)
+            "ctrl+a": "\x01",
+            "ctrl+b": "\x02",
+            "ctrl+c": "\x03",
+            "ctrl+d": "\x04",
+            "ctrl+e": "\x05",
+            "ctrl+f": "\x06",
+            "ctrl+g": "\x07",
+            "ctrl+h": "\x08",
+            "ctrl+k": "\x0b",
+            "ctrl+l": "\x0c",
+            "ctrl+n": "\x0e",
+            "ctrl+o": "\x0f",
+            "ctrl+p": "\x10",
+            "ctrl+r": "\x12",
+            "ctrl+s": "\x13",
+            "ctrl+u": "\x15",
+            "ctrl+w": "\x17",
+            "ctrl+z": "\x1a",
         }
         self._display = self.initial_display()
         self._screen = TerminalPyteScreen(self.ncol, self.nrow)
@@ -133,9 +155,14 @@ class Terminal(Widget, can_focus=True, inherit_bindings=False):
 
         self._display = self.initial_display()
 
-        self.recv_task.cancel()
+        if self.recv_task is not None:
+            self.recv_task.cancel()
+            self.recv_task = None
 
-        self.emulator.stop()
+        try:
+            self.emulator.stop()
+        except Exception:
+            pass
         self.emulator = None
 
     def restart(self, cwd: str | None = None) -> None:
@@ -148,8 +175,23 @@ class Terminal(Widget, can_focus=True, inherit_bindings=False):
     def render(self):
         return self._display
 
+    def check_consume_key(self, key: str, character: str | None) -> bool:
+        """Claim all keys when the emulator is running.
+
+        This prevents app-level bindings (j/k/t/q, Ctrl+C quit, etc.)
+        from intercepting keystrokes meant for the shell.
+        """
+        return self.emulator is not None
+
     async def on_key(self, event: events.Key) -> None:
         if self.emulator is None:
+            return
+
+        # Ctrl+T or Escape: close the terminal panel (deferred to avoid
+        # cancelling the async task that is currently running)
+        if event.key in ("ctrl+t", "escape"):
+            event.stop()
+            self.app.set_timer(0.05, self.app.action_toggle_terminal)
             return
 
         event.stop()

@@ -1957,6 +1957,7 @@ class GitDash(App):
         Binding("G", "edit_groups", "Edit Groups"),
         Binding("slash", "search", "Search"),
         Binding("t", "toggle_terminal", "Terminal"),
+        Binding("ctrl+t", "toggle_terminal", "Terminal", show=False, priority=True),
         Binding("question_mark", "help", "Help"),
         Binding("exclamation_mark", "toggle_log", "Log"),
         Binding("J", "move_repo_down", "Move Down"),
@@ -2322,24 +2323,25 @@ class GitDash(App):
         except NoMatches:
             return
         if term.display:
-            term.stop()
+            # Just hide and unfocus — keep the shell alive
             term.display = False
             cards = self._get_cards()
             if cards:
                 cards[max(0, self._focused_card_index())].focus()
         else:
-            idx = self._focused_card_index()
-            cards = self._get_cards()
-            if cards and idx >= 0:
-                cwd = str(cards[idx].repo_path)
-            elif cards:
-                cwd = str(cards[0].repo_path)
-            else:
-                self._update_status_bar("No repos available for terminal")
-                return
-            term._cwd = cwd
+            # Start only on first open; subsequent toggles just show/focus
+            if term.emulator is None:
+                idx = self._focused_card_index()
+                cards = self._get_cards()
+                if cards and idx >= 0:
+                    term._cwd = str(cards[idx].repo_path)
+                elif cards:
+                    term._cwd = str(cards[0].repo_path)
+                else:
+                    self._update_status_bar("No repos available for terminal")
+                    return
+                term.start()
             term.display = True
-            term.start()
             term.focus()
 
     def _do_stage(self, card: RepoCard) -> None:
