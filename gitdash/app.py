@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import os
 import shutil
-import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
+
+import threading
 
 from git import Repo, GitCommandError, InvalidGitRepositoryError
 from rich.text import Text
@@ -203,21 +204,126 @@ class ConfirmModal(ModalScreen[bool]):
         self.dismiss(False)
 
 
+_AI_PROMPT = (
+    "Generate a concise git commit message (one line, max 72 chars, imperative mood) "
+    "for this diff. Reply with ONLY the commit message, nothing else.\n\n"
+)
+
+_DEFAULT_MODELS: dict[str, str] = {
+    "anthropic": "claude-sonnet-4-20250514",
+    "openai": "gpt-4o-mini",
+    "ollama": "llama3",
+}
+
+
+def _generate_commit_message(diff_text: str, ai_cfg: "AIConfig | None" = None) -> tuple[str | None, str]:
+    """Generate a commit message via the configured AI provider.
+
+    Returns (message, error).  On success error is empty; on failure message is None.
+    """
+    if not ai_cfg or not ai_cfg.provider or not diff_text.strip():
+        return None, "AI not configured"
+
+    api_key = ai_cfg.resolve_api_key()
+    provider = ai_cfg.provider.lower()
+    model = ai_cfg.model or _DEFAULT_MODELS.get(provider, "")
+    truncated = diff_text[:8000]
+    prompt = _AI_PROMPT + truncated
+
+    if provider not in _DEFAULT_MODELS:
+        return None, f"Unsupported provider: {ai_cfg.provider}"
+
+    if provider in ("anthropic", "openai") and not api_key:
+        return None, f"API key not set for {provider}"
+
+    try:
+        if provider == "anthropic":
+            import anthropic
+            client = anthropic.Anthropic(api_key=api_key)
+            resp = client.messages.create(
+                model=model,
+                max_tokens=100,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return resp.content[0].text.strip().strip('"').strip("'"), ""
+
+        elif provider == "openai":
+            import openai
+            client = openai.OpenAI(api_key=api_key)
+            resp = client.chat.completions.create(
+                model=model,
+                max_tokens=100,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            return (resp.choices[0].message.content or "").strip().strip('"').strip("'"), ""
+
+        elif provider == "ollama":
+            import json
+            import urllib.request
+            base = ai_cfg.base_url or "http://localhost:11434"
+            url = f"{base}/api/generate"
+            payload = json.dumps({"model": model, "prompt": prompt, "stream": False}).encode()
+            req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                data = json.loads(resp.read())
+            return (data.get("response") or "").strip().strip('"').strip("'"), ""
+
+    except Exception as e:
+        return None, str(e)
+
+
 class CommitModal(ModalScreen[str | None]):
     """Modal to enter a commit message."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
+    def __init__(self, diff_text: str = "", ai_cfg: "AIConfig | None" = None) -> None:
+        super().__init__()
+        self._diff_text = diff_text
+        self._ai_cfg = ai_cfg
+
     def compose(self) -> ComposeResult:
         with Vertical(id="commit-dialog"):
             yield Label("\u270e Commit Message", id="commit-title")
-            yield Input(placeholder="Enter commit message...", id="commit-input")
+            ai_ready = self._diff_text and self._ai_cfg and self._ai_cfg.provider
+            placeholder = "Generating commit message..." if ai_ready else "Enter commit message..."
+            yield Input(placeholder=placeholder, id="commit-input")
             with Horizontal(id="commit-buttons"):
                 yield Button("\u2713 Commit", variant="success", id="btn-commit")
                 yield Button("\u2717 Cancel", variant="error", id="btn-cancel")
 
     def on_mount(self) -> None:
-        self.query_one("#commit-input", Input).focus()
+        inp = self.query_one("#commit-input", Input)
+        inp.focus()
+        if self._diff_text and self._ai_cfg and self._ai_cfg.provider:
+            self._request_ai_message()
+
+    def _request_ai_message(self) -> None:
+        """Generate AI commit message in a background thread."""
+        def _bg() -> None:
+            msg, err = _generate_commit_message(self._diff_text, self._ai_cfg)
+            if msg:
+                self.app.call_from_thread(self._apply_suggestion, msg)
+            else:
+                self.app.call_from_thread(self._set_placeholder, f"AI failed: {err}" if err else "Enter commit message...")
+
+        threading.Thread(target=_bg, daemon=True).start()
+
+    def _apply_suggestion(self, msg: str) -> None:
+        try:
+            inp = self.query_one("#commit-input", Input)
+        except Exception:
+            return
+        if not inp.value:
+            inp.value = msg
+            inp.placeholder = "Enter commit message..."
+
+    def _set_placeholder(self, text: str = "Enter commit message...") -> None:
+        try:
+            inp = self.query_one("#commit-input", Input)
+        except Exception:
+            return
+        inp.placeholder = text
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-commit":
@@ -279,6 +385,7 @@ class ShortcutBar(Vertical):
         ("P", "pull"),
         ("g", "group"),
         ("G", "edit groups"),
+        ("t", "terminal"),
         ("r", "refresh"),
         ("!", "ops log"),
         ("?", "help"),
@@ -533,6 +640,9 @@ class LogModal(ModalScreen):
 
     def action_close(self) -> None:
         self.app.pop_screen()
+
+
+from gitdash._terminal import Terminal
 
 
 class StageModal(ModalScreen):
@@ -1622,6 +1732,14 @@ class GitDash(App):
 
     /* ── Modals ────────────────────────────────────────── */
 
+    #terminal-panel {
+        dock: bottom;
+        height: 14;
+        display: none;
+        border-top: solid $accent;
+        background: $surface;
+    }
+
     #commit-dialog, #branch-dialog, #diff-dialog {
         width: 70;
         height: auto;
@@ -1838,6 +1956,8 @@ class GitDash(App):
         Binding("g", "switch_group", "Group"),
         Binding("G", "edit_groups", "Edit Groups"),
         Binding("slash", "search", "Search"),
+        Binding("t", "toggle_terminal", "Terminal"),
+        Binding("ctrl+t", "toggle_terminal", "Terminal", show=False, priority=True),
         Binding("question_mark", "help", "Help"),
         Binding("exclamation_mark", "toggle_log", "Log"),
         Binding("J", "move_repo_down", "Move Down"),
@@ -1859,6 +1979,7 @@ class GitDash(App):
             for rp in self.repo_paths:
                 yield RepoCard(rp, classes="repo-card", id=f"card-{rp.name}")
         yield RichLog(id="git-log", wrap=True, markup=False)
+        yield Terminal(command="bash", id="terminal-panel")
         yield ShortcutBar(id="shortcut-bar")
         yield Static("", id="status-bar")
 
@@ -2195,6 +2316,34 @@ class GitDash(App):
             on_confirm,
         )
 
+    def action_toggle_terminal(self) -> None:
+        """Toggle the inline terminal panel, scoped to the focused repo."""
+        try:
+            term = self.query_one("#terminal-panel", Terminal)
+        except NoMatches:
+            return
+        if term.display:
+            # Just hide and unfocus — keep the shell alive
+            term.display = False
+            cards = self._get_cards()
+            if cards:
+                cards[max(0, self._focused_card_index())].focus()
+        else:
+            # Start only on first open; subsequent toggles just show/focus
+            if term.emulator is None:
+                idx = self._focused_card_index()
+                cards = self._get_cards()
+                if cards and idx >= 0:
+                    term._cwd = str(cards[idx].repo_path)
+                elif cards:
+                    term._cwd = str(cards[0].repo_path)
+                else:
+                    self._update_status_bar("No repos available for terminal")
+                    return
+                term.start()
+            term.display = True
+            term.focus()
+
     def _do_stage(self, card: RepoCard) -> None:
         self.push_screen(StageModal(card.repo))
 
@@ -2207,6 +2356,20 @@ class GitDash(App):
         if not has_changes:
             self._update_status_bar(f"Nothing to commit in {card.repo_path.name}")
             return
+
+        # Gather diff for AI commit message generation
+        diff_text = ""
+        try:
+            if has_staged:
+                diff_text = card.repo.git.diff("--cached")
+            else:
+                diff_text = card.repo.git.diff()
+                # Include untracked file names
+                untracked = card.status.get("untracked", [])
+                if untracked:
+                    diff_text += "\n\nNew untracked files:\n" + "\n".join(untracked)
+        except GitCommandError:
+            pass
 
         def on_message(msg: str | None) -> None:
             if msg is None:
@@ -2225,7 +2388,8 @@ class GitDash(App):
                 self._log_action(f"[{card.repo_path.name}] ERROR commit: {e}")
                 self._update_status_bar(f"Commit failed: {e}")
 
-        self.push_screen(CommitModal(), on_message)
+        ai_cfg = self.config.ai if self.config else None
+        self.push_screen(CommitModal(diff_text=diff_text, ai_cfg=ai_cfg), on_message)
 
     def _do_diff(self, card: RepoCard, single_file: tuple[str, str] | None = None) -> None:
         if single_file:
@@ -2446,6 +2610,7 @@ class GitDash(App):
                     "- `P`: pull all repos",
                     "- `g`: switch group",
                     "- `G`: edit groups (add, remove, reorder, set paths)",
+                    "- `t`: toggle inline terminal (runs in focused repo dir)",
                     "- `!`: toggle git operations log",
                     "- `J` / `K`: move repo down or up",
                     "- `S`: save repo order",

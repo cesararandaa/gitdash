@@ -6,7 +6,13 @@ requires-python = ">=3.11"
 dependencies = [
     "textual>=1.0.0",
     "gitpython>=3.1.0",
+    "pyte>=0.8.0",
 ]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.30.0"]
+openai = ["openai>=1.0.0"]
+ai = ["anthropic>=0.30.0", "openai>=1.0.0"]
 
 [project.scripts]
 gitdash = "gitdash.app:main"

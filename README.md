@@ -24,6 +24,7 @@ Like the VS Code/Cursor git sidebar, but in your terminal — no editor needed.
 - Group switcher to jump between repo sets on the fly
 - Auto-refresh every 60 seconds
 - Fetch on startup (configurable)
+- AI-generated commit messages (BYOK: Claude, OpenAI, or Ollama)
 - Fully keyboard-driven
 
 ## Install
@@ -72,6 +73,76 @@ uv run python -m gitdash.app              # opens default group
 uv run python -m gitdash.app --group personal  # opens a specific group
 uv run python -m gitdash.app --fetch      # fetch all on startup
 ```
+
+## AI commit messages (optional)
+
+gitdash can auto-generate commit messages using an AI provider of your choice. When you press `c` to commit, the input will pre-fill with a suggested message based on your staged diff. You can edit it, replace it, or just press Enter to accept.
+
+### Setup
+
+1. Install the SDK for your provider:
+
+```bash
+pip install anthropic   # for Claude
+pip install openai      # for OpenAI
+# Ollama needs no pip package — just a running Ollama instance
+```
+
+2. Add an `[ai]` section to `~/.config/gitdash/config.toml`:
+
+```toml
+[ai]
+provider = "anthropic"
+api_key = "env:ANTHROPIC_API_KEY"
+```
+
+3. Set your API key as an environment variable:
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."
+```
+
+### Provider examples
+
+**Claude (Anthropic)**
+
+```toml
+[ai]
+provider = "anthropic"
+model = "claude-sonnet-4-20250514"  # optional, this is the default
+api_key = "env:ANTHROPIC_API_KEY"
+```
+
+**OpenAI**
+
+```toml
+[ai]
+provider = "openai"
+model = "gpt-4o-mini"  # optional, this is the default
+api_key = "env:OPENAI_API_KEY"
+```
+
+**Ollama (local, no API key needed)**
+
+```toml
+[ai]
+provider = "ollama"
+model = "llama3"  # optional, this is the default
+base_url = "http://localhost:11434"  # optional, this is the default
+```
+
+### Configuration reference
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `provider` | yes | `"anthropic"`, `"openai"`, or `"ollama"` |
+| `model` | no | Model name. Defaults: `claude-sonnet-4-20250514`, `gpt-4o-mini`, `llama3` |
+| `api_key` | yes* | `"env:VAR_NAME"` (recommended) or a raw API key. *Not needed for Ollama. |
+| `base_url` | no | Custom endpoint. Only needed for Ollama or self-hosted providers. |
+
+> **Security tip:** Use `api_key = "env:VAR_NAME"` to reference an environment variable instead of putting your key directly in the config file. This way your key never touches disk.
+
+If no `[ai]` section is present, the feature is silently disabled — everything works as before.
 
 ## Keybindings
 
