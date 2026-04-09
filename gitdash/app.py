@@ -341,10 +341,14 @@ def _generate_pr_info(log_and_diff: str, ai_cfg: "AIConfig | None" = None) -> tu
         # Parse TITLE: / DESCRIPTION: format
         title, desc = None, None
         if "TITLE:" in raw:
-            parts = raw.split("DESCRIPTION:", 1)
-            title = parts[0].replace("TITLE:", "").strip().strip('"').strip("'")
-            if len(parts) > 1:
-                desc = parts[1].strip()
+            lines = raw.split("\n")
+            title_line = next((l for l in lines if l.startswith("TITLE:")), "")
+            title = title_line.replace("TITLE:", "").strip().strip('"').strip("'")
+            if "DESCRIPTION:" in raw:
+                desc = raw.split("DESCRIPTION:", 1)[1].strip()
+            else:
+                remaining = "\n".join(l for l in lines if not l.startswith("TITLE:"))
+                desc = remaining.strip() or None
         else:
             # Fallback: first line is title, rest is description
             lines = raw.split("\n", 1)
@@ -2657,6 +2661,7 @@ class GitDash(App):
             on_confirm,
         )
 
+    @work(thread=True)
     def _do_create_pr(self, card: RepoCard) -> None:
         """Create a pull request for the current branch using gh CLI."""
         name = card.repo_path.name
@@ -2664,7 +2669,7 @@ class GitDash(App):
         tracking = card.status.get("tracking")
 
         if not branch:
-            self._update_status_bar(f"No branch info for {name}")
+            self._update_status_bar_from_thread(f"No branch info for {name}")
             return
 
         # Determine the base branch (default remote branch)
@@ -2678,7 +2683,7 @@ class GitDash(App):
             base_branch = "main"
 
         if branch == base_branch:
-            self._update_status_bar(f"Already on {base_branch} — switch to a feature branch first")
+            self._update_status_bar_from_thread(f"Already on {base_branch} — switch to a feature branch first")
             return
 
         # Gather commit log and diff for AI context
@@ -2695,13 +2700,13 @@ class GitDash(App):
         # Push branch if needed
         if not tracking:
             try:
-                self._log_action(f"[{name}] git push -u origin {branch}")
+                self._log_action_from_thread(f"[{name}] git push -u origin {branch}")
                 card.repo.git.push("-u", "origin", branch)
-                self._log_action(f"[{name}] push OK")
-                card.refresh_status()
+                self._log_action_from_thread(f"[{name}] push OK")
+                self._refresh_card_from_thread(card)
             except GitCommandError as e:
-                self._log_action(f"[{name}] ERROR push: {e}")
-                self._update_status_bar(f"Push failed for {name}: {e}")
+                self._log_action_from_thread(f"[{name}] ERROR push: {e}")
+                self._update_status_bar_from_thread(f"Push failed for {name}: {e}")
                 return
 
         def on_pr_result(result: tuple[str, str] | None) -> None:
@@ -2711,7 +2716,11 @@ class GitDash(App):
             self._create_pr_in_background(card, title, body, base_branch)
 
         ai_cfg = self.config.ai if self.config else None
-        self.push_screen(CreatePRModal(branch, base_branch, log_and_diff, ai_cfg), on_pr_result)
+        self.call_from_thread(
+            self.push_screen,
+            CreatePRModal(branch, base_branch, log_and_diff, ai_cfg),
+            on_pr_result,
+        )
 
     @work(thread=True)
     def _create_pr_in_background(self, card: RepoCard, title: str, body: str, base_branch: str) -> None:
