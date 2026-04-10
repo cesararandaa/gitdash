@@ -2699,7 +2699,11 @@ class GitDash(App):
             name = ref.name.replace("origin/", "", 1)
             if name != "HEAD" and name not in local_branches:
                 remote_branches.append(ref.name)
-        branches = local_branches + remote_branches
+        principal = ("master", "main", "develop", "development")
+        all_branches = local_branches + remote_branches
+        top = [b for b in all_branches if b in principal]
+        rest = [b for b in all_branches if b not in principal]
+        branches = top + rest
         current = card.status.get("branch", "")
 
         def on_result(result: str | None) -> None:
