@@ -970,9 +970,21 @@ class TerminalTabPanel(Vertical):
             pass
 
         if not self._tabs:
-            # No tabs left — hide the panel
+            # No tabs left — directly hide the panel and restore bars
+            # (avoids calling action_toggle_terminal which could re-open)
             self._active = -1
-            self.app.action_toggle_terminal()
+            self.display = False
+            try:
+                self.app.query_one("#shortcut-bar").display = True
+            except NoMatches:
+                pass
+            try:
+                self.app.query_one("#status-bar").display = True
+            except NoMatches:
+                pass
+            cards = list(self.app.query("RepoCard"))
+            if cards:
+                cards[0].focus()
         else:
             new_idx = min(index, len(self._tabs) - 1)
             self._active = -1  # reset so _switch_to always shows the tab
@@ -990,13 +1002,23 @@ class TerminalTabPanel(Vertical):
 
     # ── Event handlers ────────────────────────────────────
 
+    def _get_active_cwd(self) -> str | None:
+        """Return the active shell's real working directory via /proc, falling
+        back to the startup ``_cwd`` if unavailable."""
+        term = self.active_terminal
+        if term is None:
+            return None
+        if term.emulator is not None:
+            try:
+                return os.readlink(f"/proc/{term.emulator.pid}/cwd")
+            except OSError:
+                pass
+        return term._cwd
+
     def on_term_tab_label_clicked(self, event: TermTabLabel.Clicked) -> None:
         bid = event.label_id
         if bid == "term-tab-new":
-            cwd = None
-            if self.active_terminal and self.active_terminal._cwd:
-                cwd = self.active_terminal._cwd
-            self.add_tab(cwd=cwd)
+            self.add_tab(cwd=self._get_active_cwd())
         elif bid == "term-tab-close":
             if self._active >= 0:
                 self.close_tab(self._active)
@@ -2536,7 +2558,10 @@ class GitDash(App):
             pass
         panel.display = True
         panel.focus_active()
-        # Small delay to let the terminal initialize before sending input
+        # Small delay to let the terminal initialize before sending input.
+        # NOTE: `term` is intentionally captured now — the command targets the
+        # terminal that was active at invocation time, not whichever tab happens
+        # to be active when the timer fires 0.1 s later.
         self.set_timer(0.1, lambda: self._send_terminal_command(term, run_cmd))
         self._log_action(f"[cmd] {cmd.name}: {cmd.cmd}")
         self._update_status_bar(f"Running: {cmd.name}")
