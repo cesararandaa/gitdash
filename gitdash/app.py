@@ -365,7 +365,7 @@ def _generate_pr_info(log_and_diff: str, ai_cfg: "AIConfig | None" = None) -> tu
 
         # Detect AI responses that are conversational rather than a real title
         if title:
-            lower = title.lower()
+            lower = title.lower().replace("\u2019", "'")
             if any(m in lower for m in _AI_REFUSAL_MARKERS) or len(title) > 200:
                 return None, None, "AI could not generate title from the provided diff"
 
