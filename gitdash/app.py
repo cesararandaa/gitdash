@@ -274,6 +274,13 @@ def _generate_commit_message(diff_text: str, ai_cfg: "AIConfig | None" = None) -
         return None, str(e)
 
 
+_AI_REFUSAL_MARKERS = (
+    "i would need", "i can't generate", "i cannot generate",
+    "please provide the", "could you provide", "could you please provide",
+    "the actual diff", "i'd be happy to help", "i don't see any",
+    "no commits found", "no changes found",
+)
+
 _AI_PR_PROMPT = (
     "Generate a pull request title and description for the following commits and diffs.\n"
     "The title should be concise (max 72 chars) and in imperative mood.\n"
@@ -358,13 +365,8 @@ def _generate_pr_info(log_and_diff: str, ai_cfg: "AIConfig | None" = None) -> tu
 
         # Detect AI responses that are conversational rather than a real title
         if title:
-            _refusal_markers = [
-                "i would need", "i can't", "i cannot", "please provide",
-                "could you", "actual diff", "i'd be happy", "i don't see",
-                "no changes", "no commits", "it seems", "it appears",
-                "i notice", "there are no",
-            ]
-            if any(m in title.lower() for m in _refusal_markers) or len(title) > 100:
+            lower = title.lower()
+            if any(m in lower for m in _AI_REFUSAL_MARKERS) or len(title) > 200:
                 return None, None, "AI could not generate title from the provided diff"
 
         return title, desc, ""
@@ -2842,11 +2844,14 @@ class GitDash(App):
             diff_stat = card.repo.git.diff(f"{base_branch}...HEAD", "--stat").strip()
             detailed_diff = card.repo.git.diff(f"{base_branch}...HEAD").strip()
             if commit_log or detailed_diff:
-                log_and_diff = commit_log
+                parts = []
+                if commit_log:
+                    parts.append(commit_log)
                 if diff_stat:
-                    log_and_diff += "\n\n--- Diff stat ---\n" + diff_stat
+                    parts.append("--- Diff stat ---\n" + diff_stat)
                 if detailed_diff:
-                    log_and_diff += "\n\n--- Diff ---\n" + detailed_diff
+                    parts.append("--- Diff ---\n" + detailed_diff)
+                log_and_diff = "\n\n".join(parts)
         except GitCommandError:
             pass
 
