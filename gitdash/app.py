@@ -355,6 +355,18 @@ def _generate_pr_info(log_and_diff: str, ai_cfg: "AIConfig | None" = None) -> tu
             title = lines[0].strip().strip('"').strip("'")
             if len(lines) > 1:
                 desc = lines[1].strip()
+
+        # Detect AI responses that are conversational rather than a real title
+        if title:
+            _refusal_markers = [
+                "i would need", "i can't", "i cannot", "please provide",
+                "could you", "actual diff", "i'd be happy", "i don't see",
+                "no changes", "no commits", "it seems", "it appears",
+                "i notice", "there are no",
+            ]
+            if any(m in title.lower() for m in _refusal_markers) or len(title) > 100:
+                return None, None, "AI could not generate title from the provided diff"
+
         return title, desc, ""
 
     except Exception as e:
@@ -2826,11 +2838,15 @@ class GitDash(App):
         # Gather commit log and diff for AI context
         log_and_diff = ""
         try:
-            log_and_diff = card.repo.git.log(f"{base_branch}..HEAD", "--pretty=format:%s%n%b", "--no-merges")
-            diff = card.repo.git.diff(f"{base_branch}...HEAD", "--stat")
-            detailed_diff = card.repo.git.diff(f"{base_branch}...HEAD")
-            log_and_diff += "\n\n--- Diff stat ---\n" + diff
-            log_and_diff += "\n\n--- Diff ---\n" + detailed_diff
+            commit_log = card.repo.git.log(f"{base_branch}..HEAD", "--pretty=format:%s%n%b", "--no-merges").strip()
+            diff_stat = card.repo.git.diff(f"{base_branch}...HEAD", "--stat").strip()
+            detailed_diff = card.repo.git.diff(f"{base_branch}...HEAD").strip()
+            if commit_log or detailed_diff:
+                log_and_diff = commit_log
+                if diff_stat:
+                    log_and_diff += "\n\n--- Diff stat ---\n" + diff_stat
+                if detailed_diff:
+                    log_and_diff += "\n\n--- Diff ---\n" + detailed_diff
         except GitCommandError:
             pass
 
