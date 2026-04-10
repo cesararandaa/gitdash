@@ -16,6 +16,7 @@ from git import Repo, GitCommandError, InvalidGitRepositoryError
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
+from textual.message import Message
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.css.query import NoMatches
@@ -835,6 +836,206 @@ class LogModal(ModalScreen):
 
 
 from gitdash._terminal import Terminal
+
+
+class TermTabLabel(Static):
+    """Lightweight clickable label for the terminal tab bar."""
+
+    class Clicked(Message):
+        """Emitted when a tab label is clicked."""
+        def __init__(self, label_id: str) -> None:
+            super().__init__()
+            self.label_id = label_id
+
+    def on_click(self) -> None:
+        self.post_message(self.Clicked(self.id or ""))
+
+
+class TerminalTabPanel(Vertical):
+    """Terminal panel with multiple tabs, each running an independent shell."""
+
+    DEFAULT_CSS = """
+    TerminalTabPanel {
+        height: auto;
+    }
+
+    .term-tab-bar {
+        height: 1;
+        width: 100%;
+        background: $surface-darken-1;
+    }
+
+    .term-tab-item {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        background: $surface-darken-2;
+        color: $text-muted;
+    }
+
+    .term-tab-item.active {
+        background: $accent;
+        color: $text;
+        text-style: bold;
+    }
+
+    .term-tab-action {
+        width: auto;
+        height: 1;
+        padding: 0 1;
+        color: $text-muted;
+        background: transparent;
+    }
+
+    .terminal-instance {
+        height: 1fr;
+    }
+    """
+
+    def __init__(self, id: str | None = None) -> None:
+        super().__init__(id=id)
+        self._tabs: list[Terminal] = []
+        self._active: int = -1
+        self._counter: int = 0
+
+    @property
+    def active_terminal(self) -> Terminal | None:
+        if 0 <= self._active < len(self._tabs):
+            return self._tabs[self._active]
+        return None
+
+    @property
+    def emulator(self):
+        """Compatibility shim — returns the active terminal's emulator."""
+        term = self.active_terminal
+        return term.emulator if term else None
+
+    def compose(self) -> ComposeResult:
+        with Horizontal(classes="term-tab-bar"):
+            yield TermTabLabel(" + ", id="term-tab-new", classes="term-tab-action")
+            yield TermTabLabel(" × ", id="term-tab-close", classes="term-tab-action")
+
+    def add_tab(self, cwd: str | None = None) -> Terminal:
+        """Create a new terminal tab, start it, and switch to it."""
+        self._counter += 1
+        n = self._counter
+        term = Terminal(command="bash", id=f"term-{n}", classes="terminal-instance")
+        term._cwd = cwd
+        term.display = False
+        self._tabs.append(term)
+        self.mount(term)
+
+        # Insert tab label before the + action
+        bar = self.query_one(".term-tab-bar")
+        label = TermTabLabel(f" {n} ", id=f"term-tab-{n}", classes="term-tab-item")
+        bar.mount(label, before=self.query_one("#term-tab-new"))
+
+        self._switch_to(len(self._tabs) - 1)
+        term.start()
+        return term
+
+    def _switch_to(self, index: int) -> None:
+        """Activate the tab at *index*."""
+        if index < 0 or index >= len(self._tabs):
+            return
+        # Hide current
+        if 0 <= self._active < len(self._tabs):
+            self._tabs[self._active].display = False
+        self._active = index
+        self._tabs[index].display = True
+        self._tabs[index].focus()
+        self._refresh_tab_styles()
+
+    def _refresh_tab_styles(self) -> None:
+        """Update CSS classes on tab labels to reflect the active tab."""
+        for i, term in enumerate(self._tabs):
+            n = term.id.removeprefix("term-")
+            try:
+                lbl = self.query_one(f"#term-tab-{n}", TermTabLabel)
+                lbl.set_class(i == self._active, "active")
+            except NoMatches:
+                pass
+
+    def close_tab(self, index: int) -> None:
+        """Close the tab at *index* and clean up its terminal."""
+        if index < 0 or index >= len(self._tabs):
+            return
+        term = self._tabs.pop(index)
+        n = term.id.removeprefix("term-")
+        term.stop()
+        term.remove()
+        try:
+            self.query_one(f"#term-tab-{n}", TermTabLabel).remove()
+        except NoMatches:
+            pass
+
+        if not self._tabs:
+            # No tabs left — directly hide the panel and restore bars
+            # (avoids calling action_toggle_terminal which could re-open)
+            self._active = -1
+            self.display = False
+            try:
+                self.app.query_one("#shortcut-bar").display = True
+            except NoMatches:
+                pass
+            try:
+                self.app.query_one("#status-bar").display = True
+            except NoMatches:
+                pass
+            cards = list(self.app.query("RepoCard"))
+            if cards:
+                cards[0].focus()
+        else:
+            new_idx = min(index, len(self._tabs) - 1)
+            self._active = -1  # reset so _switch_to always shows the tab
+            self._switch_to(new_idx)
+
+    def start(self, cwd: str | None = None) -> Terminal:
+        """Open the first tab (called on first toggle)."""
+        return self.add_tab(cwd=cwd)
+
+    def focus_active(self) -> None:
+        """Focus the active terminal."""
+        term = self.active_terminal
+        if term:
+            term.focus()
+
+    # ── Event handlers ────────────────────────────────────
+
+    def _get_active_cwd(self) -> str | None:
+        """Return the active shell's real working directory via /proc, falling
+        back to the startup ``_cwd`` if unavailable."""
+        term = self.active_terminal
+        if term is None:
+            return None
+        if term.emulator is not None:
+            try:
+                return os.readlink(f"/proc/{term.emulator.pid}/cwd")
+            except OSError:
+                pass
+        return term._cwd
+
+    def on_term_tab_label_clicked(self, event: TermTabLabel.Clicked) -> None:
+        bid = event.label_id
+        if bid == "term-tab-new":
+            self.add_tab(cwd=self._get_active_cwd())
+        elif bid == "term-tab-close":
+            if self._active >= 0:
+                self.close_tab(self._active)
+        elif bid.startswith("term-tab-"):
+            n = bid.removeprefix("term-tab-")
+            for i, term in enumerate(self._tabs):
+                if term.id == f"term-{n}":
+                    self._switch_to(i)
+                    break
+
+    def on_terminal_next_tab_request(self, _msg: Terminal.NextTabRequest) -> None:
+        if len(self._tabs) > 1:
+            self._switch_to((self._active + 1) % len(self._tabs))
+
+    def on_terminal_prev_tab_request(self, _msg: Terminal.PrevTabRequest) -> None:
+        if len(self._tabs) > 1:
+            self._switch_to((self._active - 1) % len(self._tabs))
 
 
 class StageModal(ModalScreen):
@@ -1980,7 +2181,7 @@ class GitDash(App):
 
     #terminal-panel {
         dock: bottom;
-        height: 14;
+        height: 16;
         display: none;
         border-top: solid $accent;
         background: $surface;
@@ -2262,7 +2463,7 @@ class GitDash(App):
             for rp in self.repo_paths:
                 yield RepoCard(rp, classes="repo-card", id=f"card-{rp.name}")
         yield RichLog(id="git-log", wrap=True, markup=False)
-        yield Terminal(command="bash", id="terminal-panel")
+        yield TerminalTabPanel(id="terminal-panel")
         yield ShortcutBar(id="shortcut-bar")
         yield Static("", id="status-bar")
 
@@ -2332,15 +2533,18 @@ class GitDash(App):
             return
         cmd = commands[index]
         try:
-            term = self.query_one("#terminal-panel", Terminal)
+            panel = self.query_one("#terminal-panel", TerminalTabPanel)
         except NoMatches:
             return
         cwd = str(self.base_path)
-        if term.emulator is None:
-            term._cwd = cwd
-            term.start()
+        if panel.emulator is None:
+            # First use — create the initial tab
+            term = panel.start(cwd=cwd)
             run_cmd = cmd.cmd
         else:
+            term = panel.active_terminal
+            if term is None:
+                return
             # Terminal already running — cd to group root before executing
             run_cmd = f"cd {cwd} && {cmd.cmd}"
         # Hide the shortcut/status bars so they don't overlap the terminal
@@ -2352,9 +2556,12 @@ class GitDash(App):
             self.query_one("#status-bar").display = False
         except NoMatches:
             pass
-        term.display = True
-        term.focus()
-        # Small delay to let the terminal initialize before sending input
+        panel.display = True
+        panel.focus_active()
+        # Small delay to let the terminal initialize before sending input.
+        # NOTE: `term` is intentionally captured now — the command targets the
+        # terminal that was active at invocation time, not whichever tab happens
+        # to be active when the timer fires 0.1 s later.
         self.set_timer(0.1, lambda: self._send_terminal_command(term, run_cmd))
         self._log_action(f"[cmd] {cmd.name}: {cmd.cmd}")
         self._update_status_bar(f"Running: {cmd.name}")
@@ -2655,7 +2862,7 @@ class GitDash(App):
     def action_toggle_terminal(self) -> None:
         """Toggle the inline terminal panel, scoped to the focused repo."""
         try:
-            term = self.query_one("#terminal-panel", Terminal)
+            panel = self.query_one("#terminal-panel", TerminalTabPanel)
         except NoMatches:
             return
 
@@ -2669,9 +2876,9 @@ class GitDash(App):
         except NoMatches:
             status_bar = None
 
-        if term.display:
-            # Just hide and unfocus — keep the shell alive
-            term.display = False
+        if panel.display:
+            # Just hide and unfocus — keep shells alive
+            panel.display = False
             # Restore the shortcut/status bars
             if shortcut_bar is not None:
                 shortcut_bar.display = True
@@ -2681,25 +2888,25 @@ class GitDash(App):
             if cards:
                 cards[max(0, self._focused_card_index())].focus()
         else:
-            # Start only on first open; subsequent toggles just show/focus
-            if term.emulator is None:
+            # First open: create the initial tab
+            if panel.emulator is None:
                 idx = self._focused_card_index()
                 cards = self._get_cards()
                 if cards and idx >= 0:
-                    term._cwd = str(cards[idx].repo_path)
+                    cwd = str(cards[idx].repo_path)
                 elif cards:
-                    term._cwd = str(cards[0].repo_path)
+                    cwd = str(cards[0].repo_path)
                 else:
                     self._update_status_bar("No repos available for terminal")
                     return
-                term.start()
+                panel.start(cwd=cwd)
             # Hide the shortcut/status bars so they don't overlap the terminal
             if shortcut_bar is not None:
                 shortcut_bar.display = False
             if status_bar is not None:
                 status_bar.display = False
-            term.display = True
-            term.focus()
+            panel.display = True
+            panel.focus_active()
 
     def _do_stage(self, card: RepoCard) -> None:
         self.push_screen(StageModal(card.repo))

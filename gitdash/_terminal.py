@@ -28,6 +28,7 @@ from rich.style import Style
 from rich.color import ColorParseError
 
 from textual.widget import Widget
+from textual.message import Message
 from textual import events
 from textual import log
 
@@ -58,6 +59,12 @@ DECSET_PREFIX = "\x1b[?"
 
 class Terminal(Widget, can_focus=True, inherit_bindings=False):
     """Terminal textual widget."""
+
+    class NextTabRequest(Message):
+        """Posted when the user wants to switch to the next tab."""
+
+    class PrevTabRequest(Message):
+        """Posted when the user wants to switch to the previous tab."""
 
     DEFAULT_CSS = """
     Terminal {
@@ -185,6 +192,16 @@ class Terminal(Widget, can_focus=True, inherit_bindings=False):
 
     async def on_key(self, event: events.Key) -> None:
         if self.emulator is None:
+            return
+
+        # Tab switching (Ctrl+PageDown / Ctrl+PageUp)
+        if event.key == "ctrl+pagedown":
+            event.stop()
+            self.post_message(self.NextTabRequest())
+            return
+        if event.key == "ctrl+pageup":
+            event.stop()
+            self.post_message(self.PrevTabRequest())
             return
 
         # Ctrl+T or Escape: close the terminal panel (deferred to avoid
