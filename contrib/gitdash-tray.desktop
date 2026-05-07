@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=GitDash Tray
+Comment=Multi-repo git status indicator
+Exec=gitdash-tray
+Icon=utilities-terminal
+Terminal=false
+Categories=Development;Utility;
+X-GNOME-Autostart-enabled=true
+StartupNotify=false
