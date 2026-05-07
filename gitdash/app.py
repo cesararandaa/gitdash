@@ -13,6 +13,8 @@ from pathlib import Path
 import threading
 
 from git import Repo, GitCommandError, InvalidGitRepositoryError
+
+from gitdash.status import find_repos, short_status
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -41,15 +43,6 @@ from textual.widgets import (
 # Helpers
 # ---------------------------------------------------------------------------
 
-def find_repos(base: Path) -> list[Path]:
-    """Find all git repos (one level deep) under *base*."""
-    repos = []
-    for entry in sorted(base.iterdir()):
-        if entry.is_dir() and (entry / ".git").exists():
-            repos.append(entry)
-    return repos
-
-
 def style_diff(diff_text: str) -> Text:
     """Convert raw diff/patch text into a Rich Text with per-line coloring."""
     styled = Text()
@@ -71,97 +64,6 @@ def style_diff(diff_text: str) -> Text:
         else:
             styled.append(line)
     return styled
-
-
-def short_status(repo: Repo) -> dict:
-    """Return a dict summarising the repo status.
-
-    Uses a single ``git status --porcelain=v2 --branch`` call plus one
-    ``git stash list`` instead of 6-7 separate git operations.
-    """
-    branch = "?"
-    tracking = None
-    ahead = behind = 0
-    detached = False
-    staged: list[str] = []
-    unstaged: list[str] = []
-    untracked: list[str] = []
-    conflicted = False
-
-    try:
-        raw = repo.git.status("--porcelain=v2", "--branch", "-uall")
-    except GitCommandError:
-        raw = ""
-
-    for line in raw.splitlines():
-        if line.startswith("# branch.head "):
-            head = line[len("# branch.head "):]
-            if head == "(detached)":
-                branch = "DETACHED"
-                detached = True
-            else:
-                branch = head
-        elif line.startswith("# branch.upstream "):
-            tracking = line[len("# branch.upstream "):]
-        elif line.startswith("# branch.ab "):
-            parts = line.split()
-            # format: # branch.ab +N -M
-            for p in parts:
-                if p.startswith("+"):
-                    try:
-                        ahead = int(p)
-                    except ValueError:
-                        pass
-                elif p.startswith("-"):
-                    try:
-                        behind = abs(int(p))
-                    except ValueError:
-                        pass
-        elif line.startswith("? "):
-            # Untracked file
-            untracked.append(line[2:])
-        elif line.startswith("u "):
-            # Unmerged (conflict) entry
-            conflicted = True
-            # Extract filename: u XY sub m1 m2 m3 mW h1 h2 h3 <path>
-            u_parts = line.split(" ", 10)
-            if len(u_parts) == 11:
-                unstaged.append(u_parts[10])
-        elif line.startswith("1 ") or line.startswith("2 "):
-            # Changed entry: field index 1 has XY status
-            parts = line.split(" ", 8)
-            if len(parts) >= 9:
-                xy = parts[1]
-                # For rename entries (2), filename is after tab
-                if line.startswith("2 "):
-                    tab_parts = line.split("\t")
-                    fname = tab_parts[1] if len(tab_parts) >= 2 else parts[-1]
-                else:
-                    fname = parts[8]
-                if xy[0] not in (".", "?"):
-                    staged.append(fname)
-                if xy[1] not in (".", "?"):
-                    unstaged.append(fname)
-
-    try:
-        stash_output = repo.git.stash("list")
-        stashes = len(stash_output.splitlines()) if stash_output else 0
-    except GitCommandError:
-        stashes = 0
-
-    return {
-        "branch": branch,
-        "tracking": tracking,
-        "ahead": ahead,
-        "behind": behind,
-        "staged": staged,
-        "unstaged": unstaged,
-        "untracked": untracked,
-        "stashes": stashes,
-        "conflicted": conflicted,
-        "dirty": bool(staged or unstaged or untracked),
-        "detached": detached,
-    }
 
 
 # ---------------------------------------------------------------------------
@@ -3485,8 +3387,19 @@ def main() -> None:
         print(f"No repos found in group '{group.name}' ({group.path})")
         sys.exit(1)
 
+    # --repo NAME: narrow the group to a single repo by directory name
+    repo_paths = group.repos
+    if "--repo" in args:
+        idx = args.index("--repo")
+        if idx + 1 < len(args):
+            wanted = args[idx + 1]
+            repo_paths = [p for p in group.repos if p.name == wanted]
+            if not repo_paths:
+                print(f"Repo '{wanted}' not found in group '{group.name}'")
+                sys.exit(1)
+
     fetch = fetch or config.fetch_on_startup
-    app = GitDash(group.path, group.repos, group.name, fetch_on_startup=fetch, config=config)
+    app = GitDash(group.path, repo_paths, group.name, fetch_on_startup=fetch, config=config)
     app.run()
 
 

@@ -148,6 +148,41 @@ base_url = "http://localhost:11434"  # optional, this is the default
 
 If no `[ai]` section is present, the feature is silently disabled — everything works as before.
 
+## Tray companion (optional)
+
+`gitdash-tray` is a small system-tray indicator that shows aggregate repo status (dirty count, ahead/behind, conflicts) at a glance and opens the full TUI on click — like RepoBar for git working trees.
+
+```bash
+pip install -e '.[tray]'   # adds pystray + Pillow
+gitdash-tray
+```
+
+Menu items:
+- summary line (`<group>: N repos — M dirty — ↑X ↓Y`)
+- one row per repo with its branch state — clicking opens the TUI focused on that repo (`gitdash --repo <name>`)
+- group submenu (when more than one group is configured)
+- `Open dashboard`, `Refresh`, `Quit`
+
+**Autostart on Linux** — copy the sample unit:
+
+```bash
+cp contrib/gitdash-tray.desktop ~/.config/autostart/
+```
+
+**Custom icon** — drop a 64×64 PNG at `~/.config/gitdash/tray-icon.png` to override the built-in branch glyph.
+
+The tray reuses your existing gitdash config (`~/.config/gitdash/config.toml`). Refresh runs every 60 s in a background thread.
+
+**Modern Linux desktops (Wayland / Hyprland / GNOME / KDE)** use the StatusNotifierItem (SNI) protocol, which pystray reaches via PyGObject + AyatanaAppIndicator. Install the system libraries (Arch: `sudo pacman -S python-gobject libayatana-appindicator`) and create the venv pinned to **system** Python with `--system-site-packages` so pystray can import `gi`:
+
+```bash
+uv venv --python /usr/bin/python --system-site-packages
+uv pip install -e '.[tray]'
+uv run gitdash-tray
+```
+
+Without this, pystray falls back to the legacy XEmbed Xorg backend, which can't dock into waybar / GNOME Shell / KDE plasma trays and prints `Failed to dock icon`.
+
 ## Keybindings
 
 | Key | Action |
