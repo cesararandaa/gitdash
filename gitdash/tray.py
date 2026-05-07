@@ -111,7 +111,8 @@ def _make_icon_image(dirty: bool):
 
     if USER_ICON_PATH.exists():
         try:
-            return Image.open(USER_ICON_PATH).convert("RGBA")
+            with Image.open(USER_ICON_PATH) as img:
+                return img.convert("RGBA").copy()
         except Exception:  # noqa: BLE001
             pass  # fall back to generated glyph
 
@@ -143,6 +144,7 @@ class TrayApp:
         self.statuses: list[dict] = []
         self.summary: dict = {"total": 0, "dirty": 0, "ahead": 0, "behind": 0, "conflicts": 0, "errors": 0}
         self._stop = threading.Event()
+        self._refresh_lock = threading.Lock()
         self._icon = None  # set in run()
 
     def _pick_initial_group(self) -> RepoGroup:
@@ -155,12 +157,18 @@ class TrayApp:
     # ------- data refresh -------
 
     def refresh(self) -> None:
-        self.statuses = collect_statuses(self.group.repos)
-        self.summary = summarize(self.statuses)
-        if self._icon is not None:
-            self._icon.icon = _make_icon_image(dirty=self.summary["dirty"] > 0)
-            self._icon.title = _format_summary_label(self.group, self.summary)
-            self._icon.menu = self._build_menu()
+        # Background timer + pystray event thread can both call this; the lock
+        # ensures the menu, icon, and statuses always reflect the same group.
+        with self._refresh_lock:
+            group = self.group
+            statuses = collect_statuses(group.repos)
+            summary = summarize(statuses)
+            self.statuses = statuses
+            self.summary = summary
+            if self._icon is not None:
+                self._icon.icon = _make_icon_image(dirty=summary["dirty"] > 0)
+                self._icon.title = _format_summary_label(group, summary)
+                self._icon.menu = self._build_menu()
 
     def _refresh_loop(self) -> None:
         while not self._stop.wait(REFRESH_SECONDS):

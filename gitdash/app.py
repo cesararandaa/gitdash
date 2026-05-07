@@ -3391,12 +3391,14 @@ def main() -> None:
     repo_paths = group.repos
     if "--repo" in args:
         idx = args.index("--repo")
-        if idx + 1 < len(args):
-            wanted = args[idx + 1]
-            repo_paths = [p for p in group.repos if p.name == wanted]
-            if not repo_paths:
-                print(f"Repo '{wanted}' not found in group '{group.name}'")
-                sys.exit(1)
+        if idx + 1 >= len(args):
+            print("--repo requires a repo name")
+            sys.exit(1)
+        wanted = args[idx + 1]
+        repo_paths = [p for p in group.repos if p.name == wanted]
+        if not repo_paths:
+            print(f"Repo '{wanted}' not found in group '{group.name}'")
+            sys.exit(1)
 
     fetch = fetch or config.fetch_on_startup
     app = GitDash(group.path, repo_paths, group.name, fetch_on_startup=fetch, config=config)
