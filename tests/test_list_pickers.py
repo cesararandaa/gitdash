@@ -86,19 +86,37 @@ async def test_switch_with_filter_only_changes_branch(repo):
     assert git.Repo(repo).active_branch.name == "develop"
 
 
-async def test_enter_switches_to_top_match(repo):
+async def test_enter_exact_match_switches(repo):
+    """Typing a full branch name + Enter switches to it."""
     app = _make_app(repo)
     async with app.run_test(size=(120, 40)) as pilot:
         screen = await _open_branch_modal(app, pilot)
         inp = screen.query_one("#branch-filter", Input)
-        inp.value = "feature"
-        screen._populate_list("feature")
+        inp.value = "feature-x"
+        screen._populate_list("feature-x")
         await asyncio.sleep(0.2)
         await pilot.pause()
-        screen.on_input_submitted(Input.Submitted(inp, "feature"))
+        screen.on_input_submitted(Input.Submitted(inp, "feature-x"))
         await asyncio.sleep(0.4)
         await pilot.pause()
     assert git.Repo(repo).active_branch.name == "feature-x"
+
+
+async def test_enter_partial_new_name_creates_not_switches(repo):
+    """Regression: typing a new name that is a *substring* of an existing branch
+    must create it, not silently switch to the existing branch."""
+    app = _make_app(repo)
+    async with app.run_test(size=(120, 40)) as pilot:
+        screen = await _open_branch_modal(app, pilot)
+        inp = screen.query_one("#branch-filter", Input)
+        inp.value = "feat"  # substring of existing "feature-x"
+        screen._populate_list("feat")
+        await asyncio.sleep(0.2)
+        await pilot.pause()
+        screen.on_input_submitted(Input.Submitted(inp, "feat"))
+        await asyncio.sleep(0.4)
+        await pilot.pause()
+    assert git.Repo(repo).active_branch.name == "feat"
 
 
 async def test_enter_with_no_match_creates_branch(repo):
@@ -286,3 +304,12 @@ def test_is_linked_worktree(repo_with_worktree, tmp_path):
     git.Repo(main).git.worktree("add", str(sibling_wt), "-b", "wt-branch")
     found = find_repos(base)
     assert sibling_wt not in found
+
+
+def test_worktree_branch_map_handles_bare_repo(tmp_path):
+    """A bare repo has working_dir None; the map must return {} rather than
+    raising TypeError out of the branch-picker worker."""
+    from gitdash.status import worktree_branch_map
+
+    bare = git.Repo.init(tmp_path / "bare.git", bare=True)
+    assert worktree_branch_map(bare) == {}

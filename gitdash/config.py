@@ -73,15 +73,11 @@ class Config:
 
 def _discover_repos(base: Path) -> list[Path]:
     """Find git repos one level deep under base, skipping linked worktrees."""
-    from gitdash.status import is_linked_worktree
+    from gitdash.status import find_repos
 
     if not base.is_dir():
         return []
-    repos = []
-    for entry in sorted(base.iterdir()):
-        if entry.is_dir() and (entry / ".git").exists() and not is_linked_worktree(entry):
-            repos.append(entry)
-    return repos
+    return find_repos(base)
 
 
 def load_config() -> Config:

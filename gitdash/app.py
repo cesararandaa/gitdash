@@ -103,11 +103,8 @@ def highlight_first(list_view: ListView) -> None:
     Open is a silent no-op and diff previews stay blank. Deferred to after the
     refresh because appended children mount asynchronously."""
     def _apply() -> None:
-        for pos, item in enumerate(list_view.children):
-            if isinstance(item, ListItem) and item.id:
-                list_view.index = pos
-                return
-        list_view.index = None
+        target = first_selectable(list_view)
+        list_view.index = list(list_view.children).index(target) if target is not None else None
     list_view.call_after_refresh(_apply)
 
 
@@ -680,13 +677,24 @@ class BranchModal(ModalScreen[str | None]):
         return None
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
-        # Enter switches to the top match, or creates the typed name if no branch matches.
-        selected = self._selected_branch()
-        if selected is not None:
-            self.dismiss(selected)
+        # Enter acts on what was typed, so it never silently switches to a branch
+        # the user didn't ask for: an exact branch name switches; an empty box
+        # switches to the highlighted row; anything else is treated as a new name
+        # to create. (Partial-match switching is done via the list / Switch button.)
+        typed = event.value.strip()
+        if not typed:
+            self.dismiss(self._selected_branch())
+        elif typed in self.branches:
+            self.dismiss(typed)
         else:
-            name = event.value.strip()
-            self.dismiss(f"__create__{name}" if name else None)
+            self.dismiss(f"__create__{typed}")
+
+    def on_list_view_selected(self, event: ListView.Selected) -> None:
+        # Enter / click on a list row switches to that branch.
+        if event.item is not None and event.item.id:
+            branch = self._branch_by_id.get(event.item.id)
+            if branch is not None:
+                self.dismiss(branch)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-switch":

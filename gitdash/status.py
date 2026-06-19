@@ -42,12 +42,13 @@ def worktree_branch_map(repo: Repo) -> dict[str, str]:
     *other* worktrees of this repo (the repo's own working tree is excluded).
 
     Lets the UI warn that a branch can't be plainly switched to before trying.
-    Returns an empty dict on any git error."""
+    Returns an empty dict on any error (git failure, bare repo, stale cwd)."""
     try:
         raw = repo.git.worktree("list", "--porcelain")
-    except GitCommandError:
+        # working_dir is None for a bare repo; resolve() can raise on a stale cwd.
+        own = str(Path(repo.working_dir).resolve()) if repo.working_dir else None
+    except (GitCommandError, OSError, TypeError):
         return {}
-    own = str(Path(repo.working_dir).resolve())
     result: dict[str, str] = {}
     for block in raw.split("\n\n"):
         path = branch = None
