@@ -11,13 +11,60 @@ from pathlib import Path
 from git import GitCommandError, InvalidGitRepositoryError, Repo
 
 
+def is_linked_worktree(path: Path) -> bool:
+    """True if *path* is a linked git worktree rather than a primary checkout.
+
+    A linked worktree's ``.git`` is a *file* containing ``gitdir: <…>/worktrees/<id>``
+    (a primary checkout has a ``.git`` directory). Listing such a path as an
+    independent repo is misleading — its branch is owned by the parent repo, so
+    operations like branch switching would conflict."""
+    gitfile = path / ".git"
+    if not gitfile.is_file():
+        return False
+    try:
+        head = gitfile.read_text(errors="ignore").strip()
+    except OSError:
+        return False
+    return head.startswith("gitdir:") and "/worktrees/" in head.replace("\\", "/")
+
+
 def find_repos(base: Path) -> list[Path]:
-    """Find all git repos (one level deep) under *base*."""
+    """Find all git repos (one level deep) under *base*, skipping linked worktrees."""
     repos = []
     for entry in sorted(base.iterdir()):
-        if entry.is_dir() and (entry / ".git").exists():
+        if entry.is_dir() and (entry / ".git").exists() and not is_linked_worktree(entry):
             repos.append(entry)
     return repos
+
+
+def worktree_branch_map(repo: Repo) -> dict[str, str]:
+    """Map ``local branch name -> worktree path`` for branches checked out in
+    *other* worktrees of this repo (the repo's own working tree is excluded).
+
+    Lets the UI warn that a branch can't be plainly switched to before trying.
+    Returns an empty dict on any error (git failure, bare repo, stale cwd)."""
+    try:
+        raw = repo.git.worktree("list", "--porcelain")
+        # working_dir is None for a bare repo; resolve() can raise on a stale cwd.
+        own = str(Path(repo.working_dir).resolve()) if repo.working_dir else None
+    except (GitCommandError, OSError, TypeError):
+        return {}
+    result: dict[str, str] = {}
+    for block in raw.split("\n\n"):
+        path = branch = None
+        for line in block.splitlines():
+            if line.startswith("worktree "):
+                path = line[len("worktree "):]
+            elif line.startswith("branch "):
+                branch = line[len("branch "):].replace("refs/heads/", "", 1)
+        if path and branch:
+            try:
+                same = str(Path(path).resolve()) == own
+            except OSError:
+                same = False
+            if not same:
+                result[branch] = path
+    return result
 
 
 def short_status(repo: Repo) -> dict:

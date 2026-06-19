@@ -11,6 +11,7 @@ Like the VS Code/Cursor git sidebar, but in your terminal — no editor needed.
 - Fetch, pull, push, commit, stash, diff — per repo or all at once
 - Smart sync: auto-stashes local changes before pulling, restores after
 - Switch or create branches with a filterable picker (local + remote)
+- Worktree-aware: branches held by another worktree are flagged (🔗), with a choice to open that worktree or force the switch
 - Per-file diff viewer with file list and filter, syntax-highlighted
 - Revert changes per file or per repo
 - Stash manager: push, pop, apply, or drop individual stashes
