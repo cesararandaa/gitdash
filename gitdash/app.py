@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -14,7 +15,7 @@ import threading
 
 from git import Repo, GitCommandError, InvalidGitRepositoryError
 
-from gitdash.status import find_repos, short_status
+from gitdash.status import find_repos, short_status, worktree_branch_map
 from rich.text import Text
 from textual import work
 from textual.app import App, ComposeResult
@@ -64,6 +65,50 @@ def style_diff(diff_text: str) -> Text:
         else:
             styled.append(line)
     return styled
+
+
+def worktree_conflict_path(err: GitCommandError) -> str | None:
+    """If a checkout failed because the branch is already checked out in another
+    git worktree, return that worktree's path; otherwise None.
+
+    Git phrases this as ``'<branch>' is already used by worktree at '<path>'``
+    (or ``... is already checked out at '<path>'`` on older versions)."""
+    text = (getattr(err, "stderr", "") or "") + "\n" + str(err)
+    for marker in ("is already used by worktree at", "is already checked out at"):
+        if marker in text:
+            after = text.split(marker, 1)[1]
+            m = re.search(r"'([^']+)'", after)
+            if m:
+                return m.group(1)
+            return after.strip().strip("'\".") or None
+    return None
+
+
+def first_selectable(list_view: ListView) -> "ListItem | None":
+    """Return the first selectable row of a ListView, skipping header/placeholder
+    rows. Selectable rows carry an ``id``; non-interactive separators do not."""
+    for item in list_view.children:
+        if isinstance(item, ListItem) and item.id:
+            return item
+    return None
+
+
+def highlight_first(list_view: ListView) -> None:
+    """Highlight the first selectable row of a freshly populated ListView.
+
+    Textual >= 2 leaves a ListView's ``index`` at ``None`` after its contents
+    are cleared and re-appended, so nothing is highlighted. Our pickers read
+    ``highlighted_child`` (or react to the ``Highlighted`` message) to decide
+    what to act on, so without an explicit highlight the first Switch / Pop /
+    Open is a silent no-op and diff previews stay blank. Deferred to after the
+    refresh because appended children mount asynchronously."""
+    def _apply() -> None:
+        for pos, item in enumerate(list_view.children):
+            if isinstance(item, ListItem) and item.id:
+                list_view.index = pos
+                return
+        list_view.index = None
+    list_view.call_after_refresh(_apply)
 
 
 # ---------------------------------------------------------------------------
@@ -540,16 +585,59 @@ class ShortcutBar(Vertical):
         return text
 
 
+class WorktreeActionModal(ModalScreen[str | None]):
+    """Choice shown when the picked branch is checked out in another worktree.
+
+    Dismisses with ``"open"`` (open that worktree), ``"force"`` (switch anyway
+    via ``--ignore-other-worktrees``), or ``None`` (cancel)."""
+
+    BINDINGS = [Binding("escape", "cancel", "Cancel")]
+
+    def __init__(self, branch: str, wt_path: str) -> None:
+        super().__init__()
+        self.branch = branch
+        self.wt_path = wt_path
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="commit-dialog"):
+            yield Label(
+                f"'{self.branch}' is checked out in worktree '{Path(self.wt_path).name}'",
+                id="commit-title",
+            )
+            yield Static(
+                f"{self.wt_path}\n\nOpen that worktree, or force the switch here "
+                f"(both would point at '{self.branch}', which can desync them).",
+                id="confirm-details",
+            )
+            with Horizontal(id="commit-buttons"):
+                yield Button("Open worktree", variant="primary", id="btn-open")
+                yield Button("Force switch", variant="warning", id="btn-force")
+                yield Button("Cancel", variant="default", id="btn-cancel")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss({"btn-open": "open", "btn-force": "force"}.get(event.button.id))
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class BranchModal(ModalScreen[str | None]):
     """Modal to pick or create a branch."""
 
     BINDINGS = [Binding("escape", "cancel", "Cancel")]
 
-    def __init__(self, branches: list[str], current: str) -> None:
+    def __init__(
+        self, branches: list[str], current: str, worktrees: dict[str, str] | None = None
+    ) -> None:
         super().__init__()
         self.branches = branches
         self.current = current
+        # {branch name -> worktree path} for branches held by another worktree.
+        self.worktrees = worktrees or {}
         self._next_id = 0
+        # {ListItem id -> branch name}; lets labels carry decoration (\ud83d\udd17 markers)
+        # without the selection logic having to parse it back out.
+        self._branch_by_id: dict[str, str] = {}
 
     def compose(self) -> ComposeResult:
         with Vertical(id="branch-dialog"):
@@ -568,22 +656,37 @@ class BranchModal(ModalScreen[str | None]):
     def _populate_list(self, filt: str) -> None:
         lv = self.query_one("#branch-list", ListView)
         lv.clear()
+        self._branch_by_id = {}
         for b in self.branches:
             if filt and filt not in b.lower():
                 continue
-            idx = self._next_id
+            item_id = f"br-{self._next_id}"
             self._next_id += 1
-            lv.append(ListItem(Label(f"{'* ' if b == self.current else '  '}{b}"), id=f"br-{idx}"))
+            self._branch_by_id[item_id] = b
+            marker = "* " if b == self.current else "  "
+            held = self.worktrees.get(b)
+            suffix = f"  \U0001f517 {Path(held).name}" if held else ""
+            lv.append(ListItem(Label(f"{marker}{b}{suffix}"), id=item_id))
+        highlight_first(lv)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         self._populate_list(event.value.lower())
 
     def _selected_branch(self) -> str | None:
         lv = self.query_one("#branch-list", ListView)
-        if lv.highlighted_child is not None:
-            label = lv.highlighted_child.query_one(Label)
-            return str(label.render()).strip().lstrip("* ").strip()
+        item = lv.highlighted_child or first_selectable(lv)
+        if item is not None and item.id:
+            return self._branch_by_id.get(item.id)
         return None
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        # Enter switches to the top match, or creates the typed name if no branch matches.
+        selected = self._selected_branch()
+        if selected is not None:
+            self.dismiss(selected)
+        else:
+            name = event.value.strip()
+            self.dismiss(f"__create__{name}" if name else None)
 
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-switch":
@@ -626,13 +729,15 @@ class StashModal(ModalScreen[str | None]):
             lv.append(ListItem(Label(entry), id=f"st-{i}"))
         if not self.stash_list and not self.has_changes:
             lv.append(ListItem(Label("  (no stashes)")))
+        highlight_first(lv)
 
     def _selected_index(self) -> int | None:
         lv = self.query_one("#stash-lv", ListView)
-        if lv.highlighted_child is None or not lv.highlighted_child.id:
+        item = lv.highlighted_child or first_selectable(lv)
+        if item is None or not item.id or not item.id.startswith("st-"):
             return None
         try:
-            return int(lv.highlighted_child.id.removeprefix("st-"))
+            return int(item.id.removeprefix("st-"))
         except ValueError:
             return None
 
@@ -725,6 +830,7 @@ class LogModal(ModalScreen):
             self._next_id += 1
             self._commit_map[idx] = commit.hexsha
             lv.append(ListItem(Label(f"\u2022 {short_sha}  {date}  {msg}"), id=f"lg-{idx}"))
+        highlight_first(lv)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is None or not event.item.id or not event.item.id.startswith("lg-"):
@@ -1006,6 +1112,7 @@ class StageModal(ModalScreen):
                 self._file_map[idx] = (f, "untracked")
         if not staged and not unstaged and not untracked:
             lv.append(ListItem(Label("  (no changes)")))
+        highlight_first(lv)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         if event.item is None or not event.item.id or not event.item.id.startswith("sf-"):
@@ -1120,6 +1227,7 @@ class SearchModal(ModalScreen):
 
         if total == 0:
             lv.append(ListItem(Label(f"  No results for '{query}'")))
+        highlight_first(lv)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
         if event.item is None or not event.item.id or not event.item.id.startswith("sr-"):
@@ -1264,6 +1372,11 @@ class GroupEditorModal(ModalScreen):
         for i, g in enumerate(self._groups):
             marker = "\u25b6 " if i == self._sel else "  "
             lv.append(ListItem(Label(f"{marker}{g['name']}"), id=f"grp-{i}"))
+        # Keep the highlight on the selected group so the \u25b6 marker and the
+        # ListView highlight stay in sync (Textual >= 2 clears index on repopulate).
+        if self._groups:
+            sel = self._sel
+            lv.call_after_refresh(lambda: setattr(lv, "index", sel if 0 <= sel < len(self._groups) else 0))
 
     def _load_right_panel(self, idx: int) -> None:
         if not self._groups or idx >= len(self._groups):
@@ -1469,6 +1582,7 @@ class FileDiffModal(ModalScreen):
             self._file_map[idx] = (filepath, cat)
         if not self.files:
             lv.append(ListItem(Label("  (no changes)")))
+        highlight_first(lv)
 
     def on_input_changed(self, event: Input.Changed) -> None:
         if event.input.id == "filediff-filter":
@@ -2607,6 +2721,7 @@ class GitDash(App):
         rest = [b for b in all_branches if b not in principal]
         branches = top + rest
         current = card.status.get("branch", "")
+        worktrees = worktree_branch_map(card.repo)
 
         def on_result(result: str | None) -> None:
             if result is None:
@@ -2614,38 +2729,92 @@ class GitDash(App):
             if result.startswith("__create__"):
                 new_name = result.removeprefix("__create__")
                 if new_name:
-                    try:
-                        self._log_action(f"[{card.repo_path.name}] git checkout -b {new_name}")
-                        card.repo.git.checkout("-b", new_name)
-                        card.refresh_status()
-                        self._update_status_bar(f"Created & switched to {new_name}")
-                        self._log_action(f"[{card.repo_path.name}] branch create OK")
-                    except GitCommandError as e:
-                        self._log_action(f"[{card.repo_path.name}] ERROR branch create: {e}")
-                        self._update_status_bar(f"Branch create failed: {e}")
+                    self._checkout_with_worktree_guard(
+                        card, ["-b", new_name], new_name, f"Created & switched to {new_name}"
+                    )
             elif result.startswith("origin/"):
                 local_name = result.replace("origin/", "", 1)
-                try:
-                    self._log_action(f"[{card.repo_path.name}] git checkout -b {local_name} --track {result}")
-                    card.repo.git.checkout("-b", local_name, "--track", result)
-                    card.refresh_status()
-                    self._update_status_bar(f"Checked out remote branch {local_name}")
-                    self._log_action(f"[{card.repo_path.name}] checkout OK")
-                except GitCommandError as e:
-                    self._log_action(f"[{card.repo_path.name}] ERROR checkout: {e}")
-                    self._update_status_bar(f"Checkout failed: {e}")
+                self._checkout_with_worktree_guard(
+                    card, ["-b", local_name, "--track", result], local_name,
+                    f"Checked out remote branch {local_name}",
+                )
+            elif result in worktrees:
+                # Branch is held by another worktree: offer to open it or force.
+                self._on_worktree_held_branch(card, result, worktrees[result])
             else:
-                try:
-                    self._log_action(f"[{card.repo_path.name}] git checkout {result}")
-                    card.repo.git.checkout(result)
-                    card.refresh_status()
-                    self._update_status_bar(f"Switched to {result}")
-                    self._log_action(f"[{card.repo_path.name}] checkout OK")
-                except GitCommandError as e:
-                    self._log_action(f"[{card.repo_path.name}] ERROR checkout: {e}")
-                    self._update_status_bar(f"Checkout failed: {e}")
+                self._checkout_with_worktree_guard(
+                    card, [result], result, f"Switched to {result}"
+                )
 
-        self.call_from_thread(self.push_screen, BranchModal(branches, current), on_result)
+        self.call_from_thread(
+            self.push_screen, BranchModal(branches, current, worktrees), on_result
+        )
+
+    def _on_worktree_held_branch(self, card: RepoCard, branch: str, wt_path: str) -> None:
+        """Picked a branch held by another worktree — let the user open it or force-switch."""
+        def on_choice(choice: str | None) -> None:
+            if choice == "open":
+                self._log_action(f"[{card.repo_path.name}] open worktree {wt_path}")
+                self._do_open_editor_path(wt_path)
+            elif choice == "force":
+                self._checkout_with_worktree_guard(
+                    card, [branch], branch, f"Switched to {branch}", force=True
+                )
+        self.push_screen(WorktreeActionModal(branch, wt_path), on_choice)
+
+    def _checkout_with_worktree_guard(
+        self, card: RepoCard, args: list[str], branch_disp: str, success_msg: str,
+        force: bool = False,
+    ) -> None:
+        """Run ``git checkout *args``; if it fails because the branch is held by
+        another worktree, surface a clear message and offer a confirm-gated force
+        switch (``--ignore-other-worktrees``).
+
+        ``force=True`` skips the attempt-and-prompt and goes straight to the
+        forced checkout — used when the user has already chosen to force."""
+        name = card.repo_path.name
+
+        def run(extra: list[str] | None = None) -> bool:
+            cmd = args + (extra or [])
+            try:
+                self._log_action(f"[{name}] git checkout {' '.join(cmd)}")
+                card.repo.git.checkout(*cmd)
+                card.refresh_status()
+                self._update_status_bar(success_msg)
+                self._log_action(f"[{name}] checkout OK")
+                return True
+            except GitCommandError as e:
+                if extra:  # the forced retry itself failed
+                    self._log_action(f"[{name}] ERROR forced checkout: {e}")
+                    self._update_status_bar(f"Checkout failed: {e}")
+                    return False
+                wt = worktree_conflict_path(e)
+                if wt:
+                    wt_name = Path(wt).name
+                    self._log_action(
+                        f"[{name}] checkout blocked: '{branch_disp}' held by worktree {wt}"
+                    )
+                    self._update_status_bar(
+                        f"'{branch_disp}' is checked out in worktree '{wt_name}'"
+                    )
+                    self.push_screen(
+                        ConfirmModal(
+                            f"'{branch_disp}' is checked out in worktree '{wt_name}'.",
+                            details=(
+                                f"Force the switch anyway? Both this repo and the worktree at\n"
+                                f"{wt}\nwill point at '{branch_disp}', which can desync them."
+                            ),
+                            confirm_label="Switch anyway",
+                            confirm_variant="warning",
+                        ),
+                        lambda confirmed: run(["--ignore-other-worktrees"]) if confirmed else None,
+                    )
+                else:
+                    self._log_action(f"[{name}] ERROR checkout: {e}")
+                    self._update_status_bar(f"Checkout failed: {e}")
+                return False
+
+        run(["--ignore-other-worktrees"] if force else None)
 
     def _do_stash(self, card: RepoCard) -> None:
         name = card.repo_path.name
